@@ -24,22 +24,25 @@ editor: visual
 ## 3. Census: Download county-level data for county-level opportunity structure indicators
 #     - race, median income, poverty, IPR, ed attain, industry, unemployment
 #     --- Use tigris, include geometry
-###           CHALLENGE: # cases incr exponentially when use st_join
+###           CHALLENGE: # cases incr exponentially when later use st_join to merge
 #     --- Use tigris, exlude geometry
-###           CHALLENGE: geometry drops when join sf/df using left_join 
+###           CHALLENGE: geometry drops when later join sf/df using left_join
+###             CHOSEN SOLUTION: Download attrib data as df, merge Census/CCD b4
+###             merge to sf b/c CCD file incl lat/long coords          
 ## 4. NCES: Download NCES CCD files
 ## 5. Census: Initial cleaning - Census files
-#     - rename vars, e.g., 02001_002 -> White, combine categories, pivot wide
-#          drop outlying areas, run basic descriptives
+#     - rename vars, e.g., 02001_002 -> White, etc., combine categories, pivot 
+#          wide drop outlying areas, run basic descriptives
+#     --- CHALLENGE: Rounding w/ median income data
 ## 6. Census: Drop outlying areas in sf, merge Census dataframes
-#     - if didn't download indicator data as shapefiles
 ## 7. NCES: Initial cleaning, file merge - CCD files
 #     - drop outlying areas, keep only needed vars, fix FIPS code, merge all 
-#     --- CHALLENGE: Have x/xx, y/yy lat/long - used left_join
+#     --- CHALLENGE?: Have x/xx, y/yy lat/long? - used left_join
 #  8. COMBINED: Merge Census/CCD dfs, merge with Census county-level sf
 #     - pad CCD FIPS for merge, use left_join w/ Census and CCD dfs,
-#          add CRS to df - using st_as_sf, coords fm CCD, and crs = 4326, 
-#     --- CHALLENGE: ~316 files no lat/long - in Census but not CCD (2009BY)
+#          add CRS to df - using st_as_sf, coords fm CCD, and crs = 4326 
+#     --- CHALLENGE: ~316 cases no lat/long - in Census but not CCD (2009BY)
+#           CHOSEN SOLUTION: Drop cases no coords, then merge
 ## 9. COMBINED: Check all(st_is_valid), st_is_empty(), bbox - predicates?
 
 ```
@@ -995,5 +998,9 @@ identical(st_crs(counties_cenccd_proj), st_crs(counties_sf))
 ## returns TRUE
 
 saveRDS(counties_cenccd_proj, "counties_cenccd_proj.rds")
+
+# dbl-check
+class(counties_cenccd_proj)
+dim(counties_cenccd_proj)
 
 ```
