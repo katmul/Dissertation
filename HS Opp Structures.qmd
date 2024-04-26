@@ -15,6 +15,34 @@ editor: visual
 # RUN:     date code last run
 ```
 
+```{r}
+#| label: Potential workflow
+
+### Save core files for upload to VCE
+## 1. Load libraries
+## 2. Census: Download county-level shapefile (using tigris) - NAD83, multipoly
+## 3. Census: Download county-level data for county-level opportunity structure indicators
+#     - race, median income, poverty, IPR, ed attain, industry, unemployment
+#     --- Use tigris, include geometry
+###           CHALLENGE: # cases incr exponentially when use st_join
+#     --- Use tigris, exlude geometry
+###           CHALLENGE: geometry drops when join sf/df using left_join 
+## 4. NCES: Download NCES CCD files
+## 5. Census: Initial cleaning - Census files
+#     - rename vars, e.g., 02001_002 -> White, combine categories, pivot wide
+#          drop outlying areas, run basic descriptives
+## 6. Census: Drop outlying areas in sf, merge Census dataframes
+#     - if didn't download indicator data as shapefiles
+## 7. NCES: Initial cleaning, file merge - CCD files
+#     - drop outlying areas, keep only needed vars, fix FIPS code, merge all 
+#     --- CHALLENGE: Have x/xx, y/yy lat/long - used left_join
+#  8. COMBINED: Merge Census/CCD dfs, merge with Census county-level sf
+#     - pad CCD FIPS for merge, use left_join w/ Census and CCD dfs,
+#          add CRS to df - using st_as_sf, coords fm CCD, and crs = 4326, 
+#     --- CHALLENGE: ~316 files no lat/long - in Census but not CCD (2009BY)
+## 9. COMBINED: Check all(st_is_valid), st_is_empty(), bbox - predicates?
+
+```
 
 ```{r}
 
@@ -91,7 +119,7 @@ plot(st_geometry(counties_sf))
 st_crs(counties_sf)  ## NAD83
 class(counties_sf)
 
-# saveRDS(counties_sf, "counties_sf.rds")
+saveRDS(counties_sf, "counties_sf.rds")
 
 
 ##### ACS 5yr more robust than SAIPE and 1yr data - increased statistical 
@@ -113,6 +141,17 @@ counties_race <- get_acs(geography = "county",
 head(counties_race)  ## long format
 
 saveRDS(counties_race, "counties_race.rds")
+
+
+##################################################################
+##### Test w/ geometry column
+counties_race2 <- get_acs(geography = "county",
+                         table = ("B02001"),
+                         year = 2013,
+                         survey = "acs5",
+                         geomtery = TRUE,
+                         cb = TRUE
+)
 
 
 ##### Median income data. Per Thiede et al (2020, 2022), income data must be
@@ -898,6 +937,7 @@ saveRDS(CCD2009_13_merge, "CCD2009_13_merge.rds")
 
 ```
 
+
 ```{r}
 #| label: Merge Census/CCD dfs, merge with Census county-level sf
 
@@ -912,10 +952,48 @@ saveRDS(CCD2009_13_merge, "CCD2009_13_merge.rds")
 
 
 ## Join Census and CCD dfs
-counties_census_ccd <- left_join(counties2013f, CCD2009_13_merge, 
-                                 c("GEOID" = "county09"))
+counties_census_ccd <- left_join(CCD2009_13_merge, counties2013f, 
+                                 c("county09" = "GEOID"))
 
-## Join Census/CCD df to Census sf
-counties_cenccd_sf <- left_join(counties_census_ccd, counties_sf,
-                                by = join_by(GEOID, NAME))
+saveRDS(counties_census_ccd, "counties_census_ccd.rds")
+
+## Add CRS to df
+counties_cenccd_crs <- st_as_sf(counties_census_ccd, 
+                            coords = c("latitude.x", "longitude.x"), crs = 4326)
+
+# Error message - some cases missing coordinates in CCD file
+
+# Check CCD merge
+check_lat_long <- counties_census_ccd %>%
+  select(fips09, county09, locale09, school_name.x, 
+         ncessch.x, ncessch.x.x,
+         ncessch.y, ncessch.y.y,
+         latitude.x, longitude.x,
+         latitude.x.x, longitude.x.x,
+         latitude.y, longitude.y,
+         latitude.y.y, longitude.y.y)
+
+###??? Not sure why I have x/y lat/long
+
+print(subset(check_lat_long, is.na(latitude.x), select = c(fips09, county09)))
+print(sum(is.na(check_lat_long$latitude.x)))
+
+# No apparent pattern - just 82 cases
+
+# Omit cases with missing lat data
+counties_census_ccd <- subset(counties_census_ccd, !is.na(latitude.x))
+
+## Add CRS to df
+counties_cenccd_crs <- st_as_sf(counties_census_ccd, 
+                            coords = c("latitude.x", "longitude.x"), crs = 4326)
+
+## Transform CRS to match county shapefile                       
+counties_cenccd_proj <- counties_cenccd_crs %>%  
+  st_transform(crs = st_crs(counties_sf)) 
+                                           
+identical(st_crs(counties_cenccd_proj), st_crs(counties_sf)) 
+## returns TRUE
+
+saveRDS(counties_cenccd_proj, "counties_cenccd_proj.rds")
+
 ```
