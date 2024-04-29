@@ -20,21 +20,21 @@ editor: visual
 
 ### Save core files for upload to VCE
 ## 1. Load libraries
-## 2. Census: Download county-level shapefile (using tigris) - NAD83, multipoly
-## 3. Census: Download county-level data for county-level opportunity structure indicators
+## 2. CENSUS: Download county-level shapefile (using tigris) - NAD83, multipoly
+## 3. CENSUS: Download data for county-level opportunity structure indicators
 #     - race, median income, poverty, IPR, ed attain, industry, unemployment
-#     --- Use tigris, include geometry
+#     --- Option, use tigris, include geometry
 ###           CHALLENGE: # cases incr exponentially when later use st_join to merge
-#     --- Use tigris, exlude geometry
+#     --- Option, use tigris, exlude geometry
 ###           CHALLENGE: geometry drops when later join sf/df using left_join
 ###             CHOSEN SOLUTION: Download attrib data as df, merge Census/CCD b4
 ###             merge to sf b/c CCD file incl lat/long coords          
 ## 4. NCES: Download NCES CCD files
-## 5. Census: Initial cleaning - Census files
+## 5. CENSUS: Initial cleaning - Census files
 #     - rename vars, e.g., 02001_002 -> White, etc., combine categories, pivot 
-#          wide drop outlying areas, run basic descriptives
+#          wide, drop outlying areas, run basic descriptives
 #     --- CHALLENGE: Rounding w/ median income data
-## 6. Census: Drop outlying areas in sf, merge Census dataframes
+## 6. CENSUS: Drop outlying areas in sf, merge Census dataframes
 ## 7. NCES: Initial cleaning, file merge - CCD files
 #     - drop outlying areas, keep only needed vars, fix FIPS code, merge all 
 #     --- CHALLENGE?: Have x/xx, y/yy lat/long? - used left_join
@@ -43,7 +43,8 @@ editor: visual
 #          add CRS to df - using st_as_sf, coords fm CCD, and crs = 4326 
 #     --- CHALLENGE: ~316 cases no lat/long - in Census but not CCD (2009BY)
 #           CHOSEN SOLUTION: Drop cases no coords, then merge
-## 9. COMBINED: Check all(st_is_valid), st_is_empty(), bbox - predicates?
+## 9. COMBINED: Check geometry validity 
+
 
 ```
 
@@ -243,7 +244,7 @@ saveRDS(counties_unemploy, "counties_unemploy.rds")
 ```
 
 ```{r}
-#| label: Download NCES CCD Directory files, incl GEOIDS - save to load into VCE
+#| label: Download NCES CCD Directory files, incl long/lat - save to load into VCE
 
 ##### Load school-level dataframes from Urban Institute Ed Portal, 2009/10 
 ###  thru 2012/13 SYs - Only public schools included. Directory file needed
@@ -810,7 +811,7 @@ saveRDS(counties_unemploy_wide, "counties_unemploy_wide.rds")
 ```
 
 ```{r}
-#| label: Drop outlying areas in sf, merge Census dataframes
+#| label: Drop outlying areas in sf, check geometries, merge Census dataframes
 
 # Filter out outlying areas
 counties_sf  <- counties_sf %>%
@@ -820,7 +821,12 @@ check_counties_sf <- counties_sf %>%
   filter(as.numeric(substr(GEOID, 1, 2)) > 56)
 table(check_counties_sf)  ## 0 obs
 
-# Join Census files
+# Check geometries
+all(st_is_valid(counties_sf))  ## TRUE
+any(st_is_empty(counties_sf))  ## FALSE
+plot(counties_sf)
+
+# Join Census df
 counties2013a <- left_join(counties_ed_wide, 
                            counties_industry_wide, by = "GEOID")
 counties2013b <- left_join(counties2013a, 
@@ -833,6 +839,11 @@ counties2013e <- left_join(counties2013d,
                            counties_race_wide, by = "GEOID")
 counties2013f <- left_join(counties2013e, 
                            counties_unemploy_wide, by = "GEOID")
+
+saveRDS(counties2013f, "counties2013f.rds")
+
+
+
 ```
 
 ```{r}
@@ -940,7 +951,6 @@ saveRDS(CCD2009_13_merge, "CCD2009_13_merge.rds")
 
 ```
 
-
 ```{r}
 #| label: Merge Census/CCD dfs, merge with Census county-level sf
 
@@ -1004,3 +1014,5 @@ class(counties_cenccd_proj)
 dim(counties_cenccd_proj)
 
 ```
+
+\`\`\`{r}
