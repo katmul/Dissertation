@@ -1,0 +1,1040 @@
+---
+title: "Higher Ed Opportunity"
+format: html
+editor: visual
+---
+
+```{r}
+
+#| label: Prolog
+# PURPOSE: overall, 50K ft description
+# DIR:     list directories for files here
+# DATA:    filenames w/ correct extension
+#          or web address if applicable
+# EDITED:  date code last edited
+# RUN:     date code last run
+```
+
+```{r}
+#| label: Potential workflow
+
+### Save core files for upload to VCE
+## 1. Load libraries
+## 2. CENSUS: Download county-level shapefile (using tigris) - NAD83, multipoly
+## 3. CENSUS: Download data for county-level opportunity structure indicators
+#     - race, median income, poverty, IPR, ed attain, industry, unemployment
+#     --- Option, use tigris, include geometry
+###           CHALLENGE: # cases incr exponentially when later use st_join to merge
+#     --- Option, use tigris, exlude geometry
+###           CHALLENGE: geometry drops when later join sf/df using left_join
+###             CHOSEN SOLUTION: Download attrib data as df, merge Census/CCD b4
+###             merge to sf b/c CCD file incl lat/long coords
+
+## 4. IPEDS: Download IPED data files - so can do geo-spatial w/ non-VCE data
+
+## 4. NCES: Download NCES CCD files
+## 5. CENSUS: Initial cleaning - Census files
+#     - rename vars, e.g., 02001_002 -> White, etc., combine categories, pivot 
+#          wide, drop outlying areas, run basic descriptives
+#     --- CHALLENGE: Rounding w/ median income data
+## 6. CENSUS: Drop outlying areas in sf, check geometries/plot, merge Census dfs
+## 7. NCES: Initial cleaning, file merge - CCD files
+#     - drop outlying areas, keep only needed vars, fix FIPS code, merge all 
+#     --- CHALLENGE?: Have x/xx, y/yy lat/long? - used left_join
+#  8. COMBINED: Merge Census/CCD dfs, merge with Census county-level sf
+#     - pad CCD FIPS for merge, use left_join w/ Census and CCD dfs,
+#          add CRS to df - using st_as_sf, coords fm CCD, and crs = 4326 
+#     --- CHALLENGE: ~316 cases no lat/long - in Census but not CCD (2009BY)
+#           CHOSEN SOLUTION: Drop cases no coords, then merge
+## 9. COMBINED: Check geometry validity 
+
+
+```
+
+```{r}
+
+#| label: Load libraries, instruct to cache
+
+###??? R is not storing packages where I thought I told it to: "The downloaded 
+# binary packages are in 
+# C:\Users\kmhtd\AppData\Local\Temp\Rtmp2FbIVj\downloaded_packages""
+
+
+# install.packages("broom", dependencies = TRUE)
+# install.packages("corrr", dependencies = TRUE)
+# install.packages("educationdata", dependencies = TRUE)
+# install.packages("forcats", dependencies = TRUE)
+# install.packages("haven", dependencies = TRUE)
+# install.packages("janitor", dependencies = TRUE)
+# install.packages("purr", dependencies = TRUE)
+# install.packages("stargazer", dependencies = TRUE)
+# install.packages("skimr", dependencies = TRUE)
+# install.packages("sf", dependencies = TRUE)
+# install.packages("styler", dependencies = TRUE)
+# install.packages("tidycensus", dependencies = TRUE)
+# install.packages("tidyverse", dependencies = TRUE)
+# install.packages("tigris", dependencies = TRUE)
+library("broom")  ## nice for inspecting objects
+library("corrr")  ## nice for correlations
+library("educationdata")  ## to download CCD files from Urban Institute API
+library("forcats")  ## functions for cat vars
+library("haven")  ## to add labels
+library("janitor")  ## nice for crosstabs
+library("purrr")  ## streamlined mapping functions
+library("sf")
+library("skimr")
+library("stargazer")  ## for producing polished tables
+library("styler")  ## for applying tidyverse style to code
+library("tidycensus")
+library("tidyverse")
+library("tigris")
+###???library_of_interest   ## Canche, p. 100
+
+options(tigris_use_cache = TRUE)  ## Stores data for faster access
+
+```
+
+```{r}
+#| label: Download Census sf, then attribute dataframes - save to load into VCE
+
+##### Per census documentation for 2013 and 2014, both 2013 and 2014 TIGER/Line
+### Shapefiles reflect boundaries of governmental units as of 1/1/2013, with 
+#   only minimal updates in 2014 due to suspension of data collection fm 
+#   Boundary and Annexation survey that year. In addition, the 2012-13SY
+#   appears to have been skipped, with the 2013 data reflecting school district 
+#   boundaries for the 2011-12SY and the 2014 data reflecting 2013-14 boundaries.
+#   www2.census.gov/geo/pdfs/maps-data/data/tiger/tgrshp2013/TGRSHP2013_TechDoc.pdf
+#   www2.census.gov/geo/pdfs/maps-data/data/tiger/tgrshp2014/TGRSHP2014_TechDoc.pdf
+#   B/c HSLS student in my sample graduated b/4 9/2013, I will use the boundaries
+#   based on the 2011-12SY. These were updated in the 2010 census and descriptive
+#   analysis of HSLS school locale data suggest most changes in locale 
+#   categorization show up in the 2011-12SY data.
+
+
+##### Set Census API key
+### DONE: census_api_key("382d5d70eb12317f39a66ee1ea697d15968c1689", install = TRUE)
+
+
+##### Download county shapefile w/ tigris - use cb = false for more accurate  
+###  mapping of water boundaries. Later use erase_water()
+counties_sf <- counties(state = NULL, 
+                        cb = FALSE, 
+                        resolution = "500k", 
+                        year = 2013)
+
+plot(st_geometry(counties_sf))
+st_crs(counties_sf)  ## NAD83
+class(counties_sf)
+
+saveRDS(counties_sf, "counties_sf.rds")
+
+
+##### ACS 5yr more robust than SAIPE and 1yr data - increased statistical 
+###  reliability and better fit for pops with fewer than 20K residents
+#    Dillingham et al. (2020). DESIGNED TO PROVIDE ESTIMATES OF POP, NOT 
+#    COUNTS OF THE POP. IF DECIDE ON TRACT-LEVEL DATA, “ACS data for small 
+#    statistical areas (such as census tracts) have no control totals, which may 
+#    lead to errors in the population and housing unit estimates. In such cases, 
+#    data users are encouraged to rely more upon noncount statistics, such as 
+#    percent distributions or averages.” (p. 6)
+
+##### Race data
+counties_race <- get_acs(geography = "county",
+                         table = ("B02001"),
+                         year = 2013,
+                         survey = "acs5",
+)
+
+head(counties_race)  ## long format
+
+saveRDS(counties_race, "counties_race.rds")
+
+
+##################################################################
+##### Test w/ geometry column
+counties_race2 <- get_acs(geography = "county",
+                         table = ("B02001"),
+                         year = 2013,
+                         survey = "acs5",
+                         geomtery = TRUE,
+                         cb = TRUE
+)
+
+
+##### Median income data. Per Thiede et al (2020, 2022), income data must be
+### binned when using ACS summary files. Per Census staff recommendation, use
+#   Supplemental Table 1901. 
+## 
+counties_medinc <- get_acs(geography = "county",
+                             variables = c(
+                               "S1901_C01_001", "S1901_C01_002", "S1901_C01_003",
+                               "S1901_C01_004", "S1901_C01_005", "S1901_C01_006",
+                               "S1901_C01_007", "S1901_C01_008", "S1901_C01_009",
+                               "S1901_C01_010", "S1901_C01_011"), 
+                             year = 2013,
+                             survey = "acs5", 
+)
+
+saveRDS(counties_medinc, "counties_medinc.rds")
+
+
+##### Poverty data. Census staff recommendation to use S1701.
+counties_poverty <- get_acs(geography = "county", 
+                              variables = c(
+                                       "S1701_C01_001", "S1701_C01_002", 
+                                       "S1701_C01_004", "S1701_C01_005"),
+                              year = 2013,
+                              survey = "acs5",
+)
+
+saveRDS(counties_poverty, "counties_poverty.rds")
+
+
+##### Median IPR data.
+counties_IPR <- get_acs(geography = "county", 
+                          variables = c(
+                                       "C17002_001", "C17002_002", 
+                                       "C17002_003", "C17002_004", 
+                                       "C17002_005", "C17002_006", 
+                                       "C17002_007", "C17002_008"), 
+                          year = 2013,
+                          survey = "acs5",
+)
+
+saveRDS(counties_IPR, "counties_IPR.rds")
+
+
+##### Educational attainment data.
+counties_ed <- get_acs(geography = "county", 
+                         variables = c(
+                             "DP02_0058", "DP02_0059", "DP02_0060",
+                             "DP02_0061", "DP02_0062", "DP02_0063",
+                             "DP02_0064", "DP02_0065"),
+                         year = 2013,
+                         survey = "acs5",
+)
+
+saveRDS(counties_ed, "counties_medinc.rds")
+
+
+##### Industry data. Grouping per Brown & Schafft (2019). Pub Admin as ref group,
+###  per Thiede et al. (2022) and Butler et al. (2020)
+
+counties_industry <- get_acs(geography = "county", 
+                           variables = c(
+                             "S2405_C01_001", "S2405_C01_002", "S2405_C01_003",
+                             "S2405_C01_004", "S2405_C01_005", "S2405_C01_006",
+                             "S2405_C01_007", "S2405_C01_008", "S2405_C01_009",
+                             "S2405_C01_010", "S2405_C01_011", "S2405_C01_012",
+                             "S2405_C01_013", "S2405_C01_014"),
+                           year = 2013,
+                           survey = "acs5",
+)
+
+saveRDS(counties_industry, "counties_industry.rds")
+
+
+##### Unemployment data.
+counties_unemploy <- get_acs(geography = "county", 
+                              variables = c(
+                                "DP03_0003", "DP03_0004", "DP03_0005"),
+                              year = 2013,
+                              survey = "acs5",
+)
+
+saveRDS(counties_unemploy, "counties_unemploy.rds")
+
+```
+
+```{r}
+#| label: Download IPEDS 2013 - save to load into VCE
+
+### IPEDS 2013 data generally reflect the 2012-13 academic year. Download
+##  HD files for directory information and lat/long coord. Download IC files for 
+#   application/admissions variables - compare to Barron's.
+
+ipeds_hd2013.zip <- paste('https://nces.ed.gove/ipeds/datacenter/data/HD2013.zip')
+saveRDS(ipeds_hd2013, "C:/Users/kmhtd/Documents/Dissertation_Opp Structures/ipeds_hd2013.rds")
+
+ipeds_ic2013.zip <- paste('https://nces.ed.gove/ipeds/datacenter/data/IC2013.zip')
+saveRDS(ipeds_ic2013, "C:/Users/kmhtd/Documents/Dissertation_Opp Structures/ipeds_ic2013.rds")
+
+download.file(ipeds_hd2013, destfile = paster())
+
+
+```
+
+
+```{r}
+#| label: Download NCES CCD Directory files, incl lat/long - save to load into VCE
+
+##### Load school-level dataframes from Urban Institute Ed Portal, 2009/10 
+###  thru 2012/13 SYs - Only public schools included. Directory file needed
+##   for extended locale variable. 
+
+### 2009-10 SY
+CCD2009_dir <- get_education_data(level = "schools",
+    source = "ccd",
+    topic = "directory",
+    filters = list(year = 2009))
+
+saveRDS(CCD2009_dir, "CCD2009_dir.rds")
+
+head(CCD2009_dir)  ## wide format
+
+
+### 2010-11 SY
+CCD2010_dir <- get_education_data(level = "schools",
+    source = "ccd",
+    topic = "directory",
+    filters = list(year = 2010))
+
+saveRDS(CCD2010_dir, "CCD2010_dir.rds")
+
+
+### 2011-12SY
+CCD2011_dir <- get_education_data(level = "schools",
+    source = "ccd",
+    topic = "directory",
+    filters = list(year = 2011))
+
+saveRDS(CCD2011_dir, "CCD2011_dir.rds")
+
+head(CCD2011_dir)
+
+
+### 2012-13 SY
+CCD2012_dir <- get_education_data(level = "schools",
+    source = "ccd",
+    topic = "directory",
+    filters = list(year = 2012))
+
+saveRDS(CCD2012_dir, "CCD2012_dir.rds")
+
+```
+
+```{r}
+#| label: Initial cleaning, Census data - race
+
+## Rename variables so understandable
+counties_race <- counties_race %>%
+  mutate(variable  = case_when(
+    variable == "B02001_001" ~ "race_total",
+    variable == "B02001_002" ~ "White",
+    variable == "B02001_003" ~ "Black",
+    variable == "B02001_004" ~ "AmIn_AlNat",
+    variable == "B02001_005" ~ "As",
+    variable == "B02001_006" ~ "NatHaw_OPI",
+    variable == "B02001_007" ~ "Oth",
+    variable == "B02001_008" ~ "Two_More",
+    variable == "B02001_009" ~ "Two_InclSome",
+    variable == "B02001_010" ~ "Two_InclSome_More"
+))
+
+## Pivot from long to wide
+counties_race_wide <- counties_race %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = c(estimate, moe))
+
+## Low n's - combine other/multi categories, keep only needed
+counties_race_wide <- counties_race_wide %>%
+  mutate(
+    estimate_Other_Some = estimate_Oth + estimate_Two_More, 
+    moe_Other_Some = moe_Oth + moe_Two_More
+) 
+
+counties_race_wide <- counties_race_wide %>%
+  select(-estimate_Oth, -estimate_Two_More, -estimate_Two_InclSome,
+         -estimate_Two_InclSome_More, -moe_Oth, -moe_Two_More,  
+         -moe_Two_InclSome, -moe_Two_InclSome_More)
+
+## Check sums
+counties_race_wide <- counties_race_wide %>%
+  mutate(
+      check_race_sums = estimate_White + estimate_Black + estimate_AmIn_AlNat +
+                        estimate_As + estimate_NatHaw_OPI + estimate_Other_Some
+)
+
+summary(counties_race_wide$check_race_sums)
+
+counties_race_wide <- counties_race_wide %>%
+  mutate(check_race_diff = ifelse(estimate_race_total != check_race_sums, 1, 0))
+
+summary(counties_race_wide$check_race_diff)
+
+## No sums differ from totals - drop check vars
+counties_race_wide <- counties_race_wide %>%
+  select(!c(check_race_sums, check_race_diff))
+
+## Reorder vars
+counties_race_wide <- counties_race_wide %>% 
+  relocate(estimate_Other_Some, .before = moe_race_total)
+
+## Drop outlying areas
+# Filter out rows where the first two digits of GEOID are greater than 56
+counties_race_wide  <- counties_race_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_race_states <- counties_race_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_race_states)  ## 0 obs
+
+saveRDS(counties_race_wide, "counties_race_wide.rds")
+
+## Run basic descriptives 
+skim(counties_race_wide)
+
+###??? Not sure what I do w/ moe
+```
+
+```{r}
+#| label: Initial cleaning, Census data - medinc
+
+## Rename variables so understandable
+counties_medinc <- counties_medinc %>% 
+  mutate(variable  = case_when(
+    variable == "S1901_C01_001" ~ "medinc_total",
+    variable == "S1901_C01_002" ~ "medinc_lt_10K",
+    variable == "S1901_C01_003" ~ "medinc_10_14K",
+    variable == "S1901_C01_004" ~ "medinc_15_24K",
+    variable == "S1901_C01_005" ~ "medinc_25_34K",
+    variable == "S1901_C01_006" ~ "medinc_35_49K",
+    variable == "S1901_C01_007" ~ "medinc_50_74K",
+    variable == "S1901_C01_008" ~ "medinc_75_99K",
+    variable == "S1901_C01_009" ~ "medinc_100_149K",
+    variable == "S1901_C01_010" ~ "medinc_150_199K",
+    variable == "S1901_C01_011" ~ "medinc_200Kplus",    
+))
+
+## estimates are in percentages
+
+## Pivot from long to wide
+counties_medinc_wide <- counties_medinc %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = c(estimate, moe))
+
+##### Collapse income bins. Thiede et al (2022), use bins of 25K but stop at 
+###  50K+ - will bin to 100K+. In table S1901, estimates reported as pctgs.  
+#    Need to change in order to collapse categories. 
+
+## Move the decimal over two places
+counties_medinc_wide <- counties_medinc_wide %>%
+  mutate(
+    adj_est_medinc_lt_10K = estimate_medinc_lt_10K / 100,  
+    adj_est_medinc_10_14K = estimate_medinc_10_14K / 100,
+    adj_est_medinc_15_24K = estimate_medinc_15_24K / 100,
+    adj_est_medinc_25_34K = estimate_medinc_25_34K / 100,
+    adj_est_medinc_35_49K = estimate_medinc_35_49K / 100,
+    adj_est_medinc_50_74K = estimate_medinc_50_74K / 100,
+    adj_est_medinc_75_99K = estimate_medinc_75_99K / 100,
+    adj_est_medinc_100_149K = estimate_medinc_100_149K / 100,
+    adj_est_medinc_150_199K = estimate_medinc_150_199K / 100,
+    adj_est_medinc_200Kplus = estimate_medinc_200Kplus / 100
+)
+
+# Estimate counts
+counties_medinc_wide <- counties_medinc_wide %>%
+  mutate(
+    medinc_lt_10K_est_count = adj_est_medinc_lt_10K * estimate_medinc_total,
+    medinc_10_14K_est_count = adj_est_medinc_10_14K * estimate_medinc_total,
+    medinc_15_24K_est_count = adj_est_medinc_15_24K * estimate_medinc_total,
+    medinc_25_34K_est_count = adj_est_medinc_25_34K * estimate_medinc_total,
+    medinc_35_49K_est_count = adj_est_medinc_35_49K * estimate_medinc_total,
+    medinc_50_74K_est_count = adj_est_medinc_50_74K * estimate_medinc_total,
+    medinc_75_99K_est_count = adj_est_medinc_75_99K * estimate_medinc_total,
+    medinc_100_149K_est_count = adj_est_medinc_100_149K * estimate_medinc_total,
+    medinc_150_199K_est_count = adj_est_medinc_150_199K * estimate_medinc_total,
+    medinc_200Kplus_est_count = adj_est_medinc_200Kplus * estimate_medinc_total
+  )
+
+## Collapse to wider bins
+counties_medinc_wide <- counties_medinc_wide %>%
+  mutate( 
+    medinc_lt25K_est_count = medinc_lt_10K_est_count + 
+                             medinc_10_14K_est_count +
+                             medinc_15_24K_est_count,
+    medinc_25_49K_est_count = medinc_25_34K_est_count +
+                              medinc_35_49K_est_count,
+    medinc_gt100K_est_count = medinc_100_149K_est_count + 
+                              medinc_150_199K_est_count + 
+                              medinc_200Kplus_est_count)
+    
+## Check sums
+counties_medinc_wide <- counties_medinc_wide %>%
+  mutate(
+    check_medinc_sums = medinc_lt25K_est_count +
+                        medinc_25_49K_est_count + 
+                        medinc_50_74K_est_count +
+                        medinc_75_99K_est_count +
+                        medinc_gt100K_est_count)
+
+summary(counties_medinc_wide$check_medinc_sums)
+
+counties_medinc_wide <- counties_medinc_wide %>%
+  mutate(check_medinc_diff = ifelse(estimate_medinc_total != check_medinc_sums, 1, 0))
+
+summary(counties_medinc_wide$check_medinc_diff)
+
+# Drop outlying areas
+counties_medinc_wide  <- counties_medinc_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_medinc_states <- counties_medinc_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_medinc_states)  ## 0 obs
+
+saveRDS(counties_medinc_wide, "counties_medinc_wide.rds")
+
+## Run basic descriptives 
+skim(counties_medinc_wide, GEOID:estimate_medinc_200Kplus) 
+skim(counties_medinc_wide, adj_est_medinc_lt_10K:adj_est_medinc_200Kplus)
+skim(counties_medinc_wide, medinc_lt_10K_est_count:medinc_gt100K_est_count)
+
+
+###??? Some sums differ from totals - likely due to rounding - how handle?
+
+###??? After resolve - Drop unnecessary vars
+# counties_medinc_wide <- counties_medinc_wide %>%
+#  dplyr::select(!c(medinc_lt_10K_estimate:medinc_200Kplus_estimate))
+
+# counties_medinc_wide <- counties_medinc_wide %>%
+#   dplyr::select(!c(medinc_lt_10K_estimate_adj:medinc_35_49K_est_count))
+
+# counties_medinc_wide <- counties_medinc_wide %>%
+#  dplyr::select(!c(medinc_100_149K_est_count:medinc_200Kplus_est_count))
+# view(counties_medinc_wide)  
+
+## Reorder vars
+# counties_medinc_wide <- counties_medinc_wide %>% 
+#   relocate(medinc_lt25K_est_count, medinc_25_49K_est_count, 
+#           .before = medinc_50_74K_est_count)
+#  view(counties_medinc_wide)
+
+###??? Not sure what I do w/ medinc_moe
+ 
+```
+
+```{r}
+#| label: Initial cleaning, Census data - poverty 
+
+## Rename variables so understandable - selecting poverty all under 18, not
+# related children under 18 (004 instead of 003)
+counties_poverty <- counties_poverty %>%
+  mutate(variable  = case_when(
+    variable == "S1701_C01_001" ~ "pov_total",
+    variable == "S1701_C01_002" ~ "pov_under18",
+    variable == "S1701_C01_004" ~ "pov_18_64",
+    variable == "S1701_C01_005" ~ "pov_65plus"))
+
+## Pivot from long to wide
+counties_poverty_wide <- counties_poverty %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = c(estimate, moe))
+
+## Check sums
+counties_poverty_wide <- counties_poverty_wide %>%
+  mutate(check_poverty_sums = estimate_pov_under18 + 
+                         estimate_pov_18_64 +
+                         estimate_pov_65plus)
+
+summary(counties_poverty_wide$check_poverty_sums)
+
+counties_poverty_wide <- counties_poverty_wide %>%
+  mutate(check_pov_diff = ifelse(estimate_pov_total != check_poverty_sums, 1, 0))
+
+summary(counties_poverty_wide$check_pov_diff)
+
+## No sums differ from totals - drop check vars
+counties_poverty_wide <- counties_poverty_wide %>%
+  select(!c(check_poverty_sums, check_pov_diff))
+
+# Drop outlying areas
+counties_poverty_wide  <- counties_poverty_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_poverty_states <- counties_poverty_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_poverty_states)  ## 0 obs
+
+saveRDS(counties_poverty_wide, "counties_poverty_wide.rds")
+
+## Run basic descriptives 
+skim(counties_poverty_wide)
+
+saveRDS(counties_poverty_wide, "counties_poverty_wide.rds")
+
+```
+
+```{r}
+#| label: Initial cleaning, Census data - IPR
+
+## Rename variables so understandable - selecting poverty all under 18, not
+# related children under 18 (004 instead of 003)
+counties_IPR <- counties_IPR %>%
+  mutate(variable  = case_when(
+    variable == "C17002_001" ~ "IPR_total",
+    variable == "C17002_002" ~ "IPR_under50",
+    variable == "C17002_003" ~ "IPR_50_99",
+    variable == "C17002_004" ~ "IPR_1_124",
+    variable == "C17002_005" ~ "IPR_125_149",
+    variable == "C17002_006" ~ "IPR_150_184",
+    variable == "C17002_007" ~ "IPR_185_199",
+    variable == "C17002_008" ~ "IPR_200over"))
+
+## Pivot from long to wide
+counties_IPR_wide <- counties_IPR %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = c(estimate, moe))
+
+## Check sums
+counties_IPR_wide <- counties_IPR_wide %>%
+  mutate(check_IPR_sums = 
+      estimate_IPR_under50 +  
+      estimate_IPR_50_99 +  
+      estimate_IPR_1_124 + 
+      estimate_IPR_125_149 + 
+      estimate_IPR_150_184 + 
+      estimate_IPR_185_199 + 
+      estimate_IPR_200over)
+
+summary(counties_IPR_wide$check_IPR_sums)
+
+counties_IPR_wide <- counties_IPR_wide %>%
+  mutate(check_IPR_diff = ifelse(estimate_IPR_total != check_IPR_sums, 1, 0))
+
+summary(counties_IPR_wide$check_IPR_diff)
+
+## No sums differ from totals - drop check vars
+counties_IPR_wide <- counties_IPR_wide %>%
+  select(!c(check_IPR_sums, check_IPR_diff))
+
+# Drop outlying areas
+counties_IPR_wide  <- counties_IPR_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_IPR_states <- counties_IPR_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_IPR_states)  ## 0 obs
+
+## Run basic descriptives 
+skim(counties_IPR_wide)
+   
+saveRDS(counties_IPR_wide, "counties_IPR_wide.rds")
+
+```
+
+```{r}
+#| label: Initial cleaning, Census data - educational attainment
+
+## Rename variables so understandable
+counties_ed <- counties_ed %>%
+  mutate(variable  = case_when(
+    variable == "DP02_0058" ~ "ed_total",
+    variable == "DP02_0059" ~ "lt_gr9",
+    variable == "DP02_0060" ~ "gr9_12_nodip",
+    variable == "DP02_0061" ~ "hs_grad",
+    variable == "DP02_0062" ~ "some_college",
+    variable == "DP02_0063" ~ "assoc",
+    variable == "DP02_0064" ~ "bach",
+    variable == "DP02_0065" ~ "grad_prof",
+))
+
+## Pivot from long to wide
+counties_ed_wide <- counties_ed %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = c(estimate, moe))
+
+## Collapse to wider bins
+counties_ed_wide <- counties_ed_wide %>%
+  mutate( 
+   estimate_lt_hsgrad = estimate_lt_gr9 + estimate_gr9_12_nodip,
+   estimate_somecoll_assoc = estimate_some_college + estimate_assoc)
+
+## Check sums
+counties_ed_wide <- counties_ed_wide %>%
+  mutate(
+    check_ed_sums = estimate_lt_hsgrad + 
+                    estimate_hs_grad +  
+                    estimate_somecoll_assoc +
+                    estimate_bach +
+                    estimate_grad_prof)
+
+summary(counties_ed_wide$check_ed_sums)
+
+counties_ed_wide <- counties_ed_wide %>%
+  mutate(check_ed_diff = ifelse(estimate_ed_total != check_ed_sums, 1, 0))
+
+summary(counties_ed_wide$check_ed_diff)
+
+## No sums differ from totals - drop check vars
+counties_ed_wide <- counties_ed_wide %>%
+  select(!c(check_ed_sums, check_ed_diff))
+
+# Drop outlying areas
+counties_ed_wide  <- counties_ed_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_ed_states <- counties_ed_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_ed_states)  ## 0 obs
+
+## Run basic descriptives 
+skim(counties_ed_wide)
+
+## Reorder vars
+counties_ed_wide <- counties_ed_wide %>% 
+  relocate(estimate_lt_hsgrad, .before = estimate_hs_grad)
+
+counties_ed_wide <- counties_ed_wide %>% 
+  relocate(estimate_somecoll_assoc, .before = estimate_bach)
+   
+ counties_ed_wide <- counties_ed_wide %>%
+  select(!c(estimate_lt_gr9, estimate_gr9_12_nodip, estimate_some_college,
+            estimate_assoc)) 
+   
+saveRDS(counties_ed_wide, "counties_ed_wide.rds")
+```
+
+```{r}
+#| label: Initial cleaning, Census data - industry 
+
+## Rename variables so understandable
+counties_industry <- counties_industry %>%
+  mutate(variable  = case_when(
+    variable == "S2405_C01_001" ~ "civ_emp_pop_total",
+    variable == "S2405_C01_002" ~ "AgForFishHuntMin",
+    variable == "S2405_C01_003" ~ "Construct",
+    variable == "S2405_C01_004" ~ "Manu",
+    variable == "S2405_C01_005" ~ "Wholesale",
+    variable == "S2405_C01_006" ~ "Retail",
+    variable == "S2405_C01_007" ~ "TransWareUtil",
+    variable == "S2405_C01_008" ~ "Info",
+    variable == "S2405_C01_009" ~ "FinInsRE",
+    variable == "S2405_C01_010" ~ "Prof",
+    variable == "S2405_C01_011" ~ "EdHlthSoc",
+    variable == "S2405_C01_012" ~ "ArtEntRecAcc",
+    variable == "S2405_C01_013" ~ "OthSvcs",
+    variable == "S2405_C01_014" ~ "PubAdmin",
+))
+
+## Pivot from long to wide
+counties_industry_wide <- counties_industry %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = c(estimate, moe))
+
+## Collapse to wider bins
+counties_industry_wide <- counties_industry_wide %>%
+  mutate( 
+   estimate_TTUC = estimate_Construct + 
+                   estimate_Wholesale +  
+                   estimate_TransWareUtil,
+   estimate_prvt_svcs = estimate_Retail +
+                        estimate_EdHlthSoc + 
+                        estimate_ArtEntRecAcc + 
+                        estimate_OthSvcs,
+   estimate_prdcr_svcs = estimate_Info +
+                         estimate_FinInsRE +
+                         estimate_Prof)
+   
+## Check sums
+counties_industry_wide <- counties_industry_wide %>%
+  mutate(check_industry_sums = estimate_AgForFishHuntMin + 
+    estimate_TTUC + 
+    estimate_Manu + 
+    estimate_prvt_svcs + 
+    estimate_prdcr_svcs + 
+    estimate_PubAdmin)
+
+summary(counties_industry_wide$check_industry_sums)
+
+counties_industry_wide <- counties_industry_wide %>%
+  mutate(check_industry_diff = ifelse(estimate_civ_emp_pop_total != 
+                                        check_industry_sums, 1, 0))
+
+summary(counties_industry_wide$check_industry_diff)
+
+## No sums differ from totals - drop check vars
+counties_industry_wide <- counties_industry_wide %>%
+  select(!c(estimate_Construct, estimate_Wholesale, estimate_TransWareUtil,
+            estimate_Retail, estimate_EdHlthSoc, estimate_ArtEntRecAcc,
+            estimate_OthSvcs, check_industry_sums, check_industry_diff))
+
+# Filter out outlying areas
+counties_industry_wide  <- counties_industry_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_industry_states <- counties_industry_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_industry_states)  ## 0 obs
+
+## Run basic descriptives 
+skim(counties_industry_wide)
+
+## Reorder vars
+counties_industry_wide <- counties_industry_wide %>% 
+  relocate(estimate_TTUC:estimate_prdcr_svcs, .before = estimate_PubAdmin)
+
+saveRDS(counties_industry_wide, "counties_industry_wide.rds")
+ 
+```
+
+```{r}
+#| label: Initial cleaning, Census data - unemployment
+
+## Rename variables so understandable
+counties_unemploy <- counties_unemploy %>%
+  mutate(variable  = case_when(
+    variable == "DP03_0003" ~ "civ_16plus_labfor",
+    variable == "DP03_0004" ~ "civ_16plus_in_labfor",
+    variable == "DP03_0005" ~ "civ_16plus_unemp"))
+
+## Pivot from long to wide
+counties_unemploy_wide <- counties_unemploy %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = c(estimate, moe))
+
+## Check sums
+counties_unemploy_wide <- counties_unemploy_wide %>%
+  mutate(check_unemploy_sums = estimate_civ_16plus_in_labfor +
+                               estimate_civ_16plus_unemp)
+
+summary(counties_unemploy_wide$check_unemploy_sums)
+
+counties_unemploy_wide <- counties_unemploy_wide %>%
+  mutate(check_unemploy_diff = ifelse(estimate_civ_16plus_labfor != 
+                                        check_unemploy_sums, 1, 0))
+
+summary(counties_unemploy_wide$check_unemploy_diff)
+
+## No sums differ from totals - drop check vars
+counties_unemploy_wide <- counties_unemploy_wide %>%
+  select(!c(check_unemploy_sums, check_unemploy_diff))
+
+# Filter out outlying areas
+counties_unemploy_wide  <- counties_unemploy_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_unemploy_states <- counties_unemploy_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_unemploy_states)  ## 0 obs
+
+## Run basic descriptives 
+skim(counties_unemploy_wide)
+
+saveRDS(counties_unemploy_wide, "counties_unemploy_wide.rds")
+
+```
+
+```{r}
+#| label: Drop outlying areas in sf, check geometries/plot, merge Census dfs
+
+# Filter out outlying areas
+counties_sf  <- counties_sf %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_counties_sf <- counties_sf %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_counties_sf)  ## 0 obs
+
+# Check geometries
+all(st_is_valid(counties_sf))  ## TRUE
+any(st_is_empty(counties_sf))  ## FALSE
+
+# plot
+plot(st_geometry(counties_sf))
+
+# Join Census df
+counties2013a <- left_join(counties_ed_wide, 
+                           counties_industry_wide, by = "GEOID")
+counties2013b <- left_join(counties2013a, 
+                           counties_IPR_wide, by = "GEOID")
+counties2013c <- left_join(counties2013b, 
+                           counties_medinc_wide, by = "GEOID")
+counties2013d <- left_join(counties2013c, 
+                           counties_poverty_wide, by = "GEOID")
+counties2013e <- left_join(counties2013d, 
+                           counties_race_wide, by = "GEOID")
+counties2013f <- left_join(counties2013e, 
+                           counties_unemploy_wide, by = "GEOID")
+
+saveRDS(counties2013f, "counties2013f.rds")
+
+```
+
+```{r}
+#| label: Initial cleaning, file merge - CCD files
+
+#####  Shapefiles do not appear to be available for 2013. Downloaded 2015-16  
+###  separately from 
+#    https://data-nces.opendata.arcgis.com/datasets/741214a4a1824b018506fd140599e57f_0/explore
+
+### 2009-10 SY
+# Drop outlying areas
+CCD2009_dir_statesonly <- CCD2009_dir %>%
+  dplyr::filter(fips <= 56)  
+table(CCD2009_dir_statesonly$fips)  
+
+# Create list of vars to keep
+CCDdir_col_keep <- c("year", "ncessch", "school_id", "school_name", "leaid", 
+                     "lea_name", "fips", "latitude", "longitude", 
+                     "urban_centric_locale", "county_code", "school_type", 
+                     "school_status", "charter", "magnet", "virtual", 
+                     "enrollment", "ncessch_num")
+
+##### Per CCD 2009 codebook: 
+###  TYPE09 1 = reg, 2 = spec ed, 3 = voc ed, 4 = alt, 5 = reportable program
+#   STATUS09 1 = open at last report/currently open,
+#            2 = closed
+#            3 = opened
+#            4 = operation last report but not on CCD list at time
+#            5 = listed last year as with diff LEA
+#            6 = closed
+#            7 = scheduled to be operational
+#            8 = reopened
+
+# Retain only needed vars
+CCD2009_dir_short <- select(CCD2009_dir_statesonly, !!!CCDdir_col_keep)
+
+saveRDS(CCD2009_dir_short, "CCD2009_dir_short.rds")
+
+
+### 2010-11 SY
+# Drop outlying areas
+CCD2010_dir_statesonly <- CCD2010_dir %>%
+  dplyr::filter(fips <= 56)  
+table(CCD2010_dir_statesonly$fips)  
+
+# Keep only needed vars
+CCD2010_dir_short <- select(CCD2010_dir_statesonly, !!!CCDdir_col_keep)
+
+saveRDS(CCD2010_dir_short, "CCD2010_dir_short.rds")
+
+
+### 2011-12SY
+# Drop outlying areas
+CCD2011_dir_statesonly <- CCD2011_dir %>%
+  dplyr::filter(fips <= 56)  
+table(CCD2011_dir_statesonly$fips)  ## 101,501 obs
+
+# Keep only needed vars
+CCD2011_dir_short <- select(CCD2011_dir_statesonly, !!!CCDdir_col_keep)
+
+saveRDS(CCD2011_dir_short, "CCD2011_dir_short.rds")
+
+
+### 2012-13 SY
+# Drop outlying areas
+CCD2012_dir_statesonly <- CCD2012_dir %>%
+  dplyr::filter(fips <= 56)  
+table(CCD2012_dir_statesonly$fips)  
+
+# Keep only needed vars
+CCD2012_dir_short <- select(CCD2012_dir_statesonly, !!!CCDdir_col_keep)
+
+saveRDS(CCD2012_dir_short, "CCD2012_dir_short.rds")
+
+
+##### Merge CCD Directory Files
+
+##### Per E. Christopher, NCES, “HSLS:09 is nationally representative of schools 
+###  in 2009 with 9th grades." email, 2/23/24 - So, merge to keep only schools 
+#    that were in CCD during 2009 and each of the following years. 
+#    Also, in UI CCD files, year as separate var. Add suffix to distinguish years. 
+#    Left join uses a common key, retains all rows fm left df, incl matching rows
+#    fm right df. Rows fm left w/ no match on right will have NAs. 
+
+## Add year as variable suffix for geo vars, rename fips code for later merge
+CCD2009_dir_addyr <- CCD2009_dir_short %>%
+  rename(locale09 = urban_centric_locale, county09 = county_code, fips09 = fips)
+
+CCD2010_dir_addyr <- CCD2010_dir_short %>%
+  rename(locale10 = urban_centric_locale, county10 = county_code, fips10 = fips)
+
+CCD2011_dir_addyr <- CCD2011_dir_short %>%
+  rename(locale11 = urban_centric_locale, county11 = county_code, fips11 = fips)
+
+CCD2012_dir_addyr <- CCD2012_dir_short %>%
+  rename(locale12 = urban_centric_locale, county12 = county_code, fips12 = fips)
+            
+
+## Create one file of CCD dir data across all years, to check changes in locale
+CCD2009_11_merge <- left_join(CCD2009_dir_addyr, CCD2010_dir_addyr, 
+                              by = "ncessch_num")
+CCD2009_12_merge <- left_join(CCD2009_11_merge, CCD2011_dir_addyr, by = "ncessch_num")
+CCD2009_13_merge <- left_join(CCD2009_12_merge, CCD2012_dir_addyr, by = "ncessch_num")
+saveRDS(CCD2009_13_merge, "CCD2009_13_merge.rds")
+
+```
+
+
+```{r}
+#| label: Merge Census/CCD dfs, merge with Census county-level sf
+
+##### UI CCD files incl FIPS code but drop leading zeros - Census files do not.
+###  Use sprintf/"%05d" to pad FIPS, for merge
+
+CCD2009_13_merge$county09 <- sprintf("%05s", CCD2009_13_merge$county09)
+
+nchar(CCD2009_13_merge$county09)  ## Now 5 characters
+
+saveRDS(CCD2009_13_merge, "CCD2009_13_merge.rds")
+
+
+## Join Census and CCD dfs
+counties_census_ccd <- left_join(CCD2009_13_merge, counties2013f, 
+                                 c("county09" = "GEOID"))
+
+saveRDS(counties_census_ccd, "counties_census_ccd.rds")
+
+## Add CRS to df
+counties_cenccd_crs <- st_as_sf(counties_census_ccd, 
+                            coords = c("latitude.x", "longitude.x"), crs = 4326)
+
+# Error message - some cases missing coordinates in CCD file
+
+# Check CCD merge
+check_lat_long <- counties_census_ccd %>%
+  select(fips09, county09, locale09, school_name.x, 
+         ncessch.x, ncessch.x.x,
+         ncessch.y, ncessch.y.y,
+         latitude.x, longitude.x,
+         latitude.x.x, longitude.x.x,
+         latitude.y, longitude.y,
+         latitude.y.y, longitude.y.y)
+
+###??? Not sure why I have x/y lat/long
+
+print(subset(check_lat_long, is.na(latitude.x), select = c(fips09, county09)))
+print(sum(is.na(check_lat_long$latitude.x)))
+
+# No apparent pattern - just 82 cases
+
+# Omit cases with missing lat data
+counties_census_ccd <- subset(counties_census_ccd, !is.na(latitude.x))
+
+## Add CRS to df
+counties_cenccd_crs <- st_as_sf(counties_census_ccd, 
+                            coords = c("latitude.x", "longitude.x"), crs = 4326)
+
+## Transform CRS to match county shapefile                       
+counties_cenccd_proj <- counties_cenccd_crs %>%  
+  st_transform(crs = st_crs(counties_sf)) 
+                                           
+identical(st_crs(counties_cenccd_proj), st_crs(counties_sf)) 
+## returns TRUE
+
+saveRDS(counties_cenccd_proj, "counties_cenccd_proj.rds")
+
+# dbl-check
+class(counties_cenccd_proj)
+dim(counties_cenccd_proj)
+
+```
+```{r}
