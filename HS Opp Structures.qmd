@@ -1,5 +1,5 @@
 ---
-title: "High School Opportunity"
+title: "High School Opportunity Structures"
 format: html
 editor: visual
 ---
@@ -16,11 +16,11 @@ editor: visual
 ```
 
 ```{r}
-#| label: Potential workflow
+#| label: Potential workflow, incl FINAL PROJECT requirements
 
 ### Save core files for upload to VCE
 ## 1. Load libraries
-## 2. CENSUS: Download county-level shapefile (using tigris) - NAD83, multipoly
+## 2. CENSUS: Download county-level shapefile (using tigris) - NAD83
 ## 3. CENSUS: Download data for county-level opportunity structure indicators
 #     - race, median income, poverty, IPR, ed attain, industry, unemployment
 #     --- Option, use tigris, include geometry
@@ -28,8 +28,9 @@ editor: visual
 #     --- Option, use tigris, exlude geometry
 ###           CHALLENGE: geometry drops when later join sf/df using left_join
 ###             CHOSEN SOLUTION: Download attrib data as df, merge Census/CCD b4
-###             merge to sf b/c CCD file incl lat/long coords          
-## 4. NCES: Download NCES CCD files
+###             merge to sf b/c CCD file incl lat/long coords 
+###             SURPRISE!: Appears not all counties reflected in CCD data
+## 4. NCES: Download/save NCES CCD files
 ## 5. CENSUS: Initial cleaning - Census files
 #     - rename vars, e.g., 02001_002 -> White, etc., combine categories, pivot 
 #          wide, drop outlying areas, run basic descriptives
@@ -38,14 +39,34 @@ editor: visual
 ## 7. NCES: Initial cleaning, file merge - CCD files
 #     - drop outlying areas, keep only needed vars, fix FIPS code, merge all 
 #     --- CHALLENGE?: Have x/xx, y/yy lat/long? - used left_join
-#  8. COMBINED: Merge Census/CCD dfs, merge with Census county-level sf
-#     - pad CCD FIPS for merge, use left_join w/ Census and CCD dfs,
-#          add CRS to df - using st_as_sf, coords fm CCD, and crs = 4326 
+#  8. COMBINED: Merge CCD/Census dfs, the merge w/ Census county-level sf
+#     - pad CCD FIPS for merge, use left_join to merge CCD/Census dfs,
+#          add CRS to merged df
 #     --- CHALLENGE: ~316 cases no lat/long - in Census but not CCD (2009BY)
 #           CHOSEN SOLUTION: Drop cases no coords, then merge
-## 9. COMBINED: Check geometry validity 
-
-
+#     --- CHALLENGE: Bounding box range potentially invalid - not sure how to 
+#           correct. Map is a disaster. 
+#     *** FINAL REQUIREMENT: Use at least 5 datasets -> 12 used
+## 9. ANALYSIS: Look at spatial autocorrelation, spatial matrix
+#     --- CHALLENGE: Error message, can't interpret X as point pattern - improper
+#           data projection? Limits all further analysis
+# 10. ANALYSIS: Conduct logistic regression
+#     *** FINAL REQUIREMENT: Select class of analysis, justify choice, assess
+#           whether data meet assumptions, evaluate implications of key
+#           assumptions, e.g., model fit?
+#    --- CHALLENGE: Need to address prior issues to run
+# 11. VISUALIZATIONS: Minimum of 3, 
+#     *** FINAL REQUIREMENT: One should be pub quality, help you tell your story.
+# 12. REPORTING: Manuscript style doc
+#     *** FINAL REQUIREMENT: 1-2 paragraph description of question and why 
+#           interested; methods section with subsections describing data sources,
+#           processing steps taken/why, and analysis process. Show/annotate code;
+#           results section w/ tabular results, visualizations; Discussion of 
+#           results in context of research question, considers alternative 
+#           strategies, additional data that may be important, considers role
+#           of extent/resolution in analysis. 
+# 13. SELF-ASSESSMENT: How well does the project demonstrate that I achieved my
+#       initial objects?
 ```
 
 ```{r}
@@ -58,33 +79,49 @@ editor: visual
 
 
 # install.packages("broom", dependencies = TRUE)
+# install.packages("caret", dependencies = TRUE)
+# install.packages("car", dependencies = TRUE)
 # install.packages("corrr", dependencies = TRUE)
 # install.packages("educationdata", dependencies = TRUE)
 # install.packages("forcats", dependencies = TRUE)
 # install.packages("haven", dependencies = TRUE)
 # install.packages("janitor", dependencies = TRUE)
+# install.packages("KernSmooth", dependencies = TRUE)
+# install.packages("lmtest", dependencies = TRUE)
 # install.packages("purr", dependencies = TRUE)
+# install.packages("spatstat", dependencies = TRUE)
+# install.packages("spdep", dependencies = TRUE)
 # install.packages("stargazer", dependencies = TRUE)
 # install.packages("skimr", dependencies = TRUE)
 # install.packages("sf", dependencies = TRUE)
 # install.packages("styler", dependencies = TRUE)
+# install.packages("terra", dependencies = TRUE)
 # install.packages("tidycensus", dependencies = TRUE)
 # install.packages("tidyverse", dependencies = TRUE)
 # install.packages("tigris", dependencies = TRUE)
-library("broom")  ## nice for inspecting objects
-library("corrr")  ## nice for correlations
+# install.packages("tmap", dependencies = TRUE)
+library("broom")          ## nice for inspecting objects
+library("car")            ## for multicollinearity/robust standard errors
+library("caret")          ## machine learning
+library("corrr")          ## nice for correlations
 library("educationdata")  ## to download CCD files from Urban Institute API
-library("forcats")  ## functions for cat vars
-library("haven")  ## to add labels
-library("janitor")  ## nice for crosstabs
-library("purrr")  ## streamlined mapping functions
-library("sf")
+library("forcats")        ## functions for cat vars
+library("haven")          ## to add labels
+library("janitor")        ## nice for crosstabs
+library("KernSmooth")
+library("lmtest")         ## for robust standard errors
+library("purrr")          ## streamlined mapping functions
+library("spatstat")       ## for point data
+library("spdep")          ## for Moran's I
+library("sf")     
 library("skimr")
-library("stargazer")  ## for producing polished tables
-library("styler")  ## for applying tidyverse style to code
+library("spatstat")
+library("stargazer")      ## for producing polished tables
+library("styler")         ## for applying tidyverse style to code
 library("tidycensus")
 library("tidyverse")
 library("tigris")
+library ("tmap")
 ###???library_of_interest   ## Canche, p. 100
 
 options(tigris_use_cache = TRUE)  ## Stores data for faster access
@@ -145,17 +182,6 @@ counties_race <- get_acs(geography = "county",
 head(counties_race)  ## long format
 
 saveRDS(counties_race, "counties_race.rds")
-
-
-##################################################################
-##### Test w/ geometry column
-counties_race2 <- get_acs(geography = "county",
-                         table = ("B02001"),
-                         year = 2013,
-                         survey = "acs5",
-                         geomtery = TRUE,
-                         cb = TRUE
-)
 
 
 ##### Median income data. Per Thiede et al (2020, 2022), income data must be
@@ -824,6 +850,9 @@ table(check_counties_sf)  ## 0 obs
 # Check geometries
 all(st_is_valid(counties_sf))  ## TRUE
 any(st_is_empty(counties_sf))  ## FALSE
+st_bbox(counties_sf)
+#       xmin       ymin       xmax       ymax 
+# -179.23109   18.86546  179.85968   71.44106 
 plot(counties_sf)
 
 # Join Census df
@@ -842,15 +871,13 @@ counties2013f <- left_join(counties2013e,
 
 saveRDS(counties2013f, "counties2013f.rds")
 
-
-
 ```
 
 ```{r}
 #| label: Initial cleaning, file merge - CCD files
 
-#####  Shapefiles do not appear to be available for 2013. Downloaded 2015-16  
-###  separately from 
+##### Separately, shapefiles do not appear to be available for 2013. Downloaded  
+###  2015-16 from 
 #    https://data-nces.opendata.arcgis.com/datasets/741214a4a1824b018506fd140599e57f_0/explore
 
 ### 2009-10 SY
@@ -928,91 +955,268 @@ saveRDS(CCD2012_dir_short, "CCD2012_dir_short.rds")
 #    Left join uses a common key, retains all rows fm left df, incl matching rows
 #    fm right df. Rows fm left w/ no match on right will have NAs. 
 
-## Add year as variable suffix for geo vars, rename fips code for later merge
+### Add year as variable suffix to id changes over time, exclude ncessch,  
+## school_id, school_name, leaid, lea_name, latitude, longitude, ncessch_num
+
+exclude_ccd_suffix <- c("ncessch", "school_id", "school_name", "leaid",
+                        "lea_name", "latitude", "longitude", 
+                        "ncessch_num") 
+
 CCD2009_dir_addyr <- CCD2009_dir_short %>%
-  rename(locale09 = urban_centric_locale, county09 = county_code, fips09 = fips)
+  rename_with(~ paste0(., "09"), -all_of(exclude_ccd_suffix))
 
 CCD2010_dir_addyr <- CCD2010_dir_short %>%
-  rename(locale10 = urban_centric_locale, county10 = county_code, fips10 = fips)
+  rename_with(~ paste0(., "10"), -all_of(exclude_ccd_suffix))
 
 CCD2011_dir_addyr <- CCD2011_dir_short %>%
-  rename(locale11 = urban_centric_locale, county11 = county_code, fips11 = fips)
+  rename_with(~ paste0(., "11"), -all_of(exclude_ccd_suffix))
 
 CCD2012_dir_addyr <- CCD2012_dir_short %>%
-  rename(locale12 = urban_centric_locale, county12 = county_code, fips12 = fips)
+  rename_with(~ paste0(., "12"), -all_of(exclude_ccd_suffix))
             
 
 ## Create one file of CCD dir data across all years, to check changes in locale
 CCD2009_11_merge <- left_join(CCD2009_dir_addyr, CCD2010_dir_addyr, 
                               by = "ncessch_num")
-CCD2009_12_merge <- left_join(CCD2009_11_merge, CCD2011_dir_addyr, by = "ncessch_num")
-CCD2009_13_merge <- left_join(CCD2009_12_merge, CCD2012_dir_addyr, by = "ncessch_num")
+
+CCD2009_12_merge <- left_join(CCD2009_11_merge, CCD2011_dir_addyr, 
+                              by = "ncessch_num")
+
+CCD2009_13_merge <- left_join(CCD2009_12_merge, CCD2012_dir_addyr, 
+                              by = "ncessch_num")
+
 saveRDS(CCD2009_13_merge, "CCD2009_13_merge.rds")
 
 ```
 
 ```{r}
-#| label: Merge Census/CCD dfs, merge with Census county-level sf
+#| label: Merge CCD/Census dfs, merge w/ Census county-level sf, check geom
+#| eval: false
 
-##### UI CCD files incl FIPS code but drop leading zeros - Census files do not.
-###  Use sprintf/"%05d" to pad FIPS, for merge
+###??? This code chunk does not run properly due to unresolved errors in join 
 
-CCD2009_13_merge$county09 <- sprintf("%05s", CCD2009_13_merge$county09)
+##### UI CCD files incl FIPS code county_code) but drop leading zeros - Census 
+###  files do not. Use sprintf/"%05d" to pad FIPS, for merge
 
-nchar(CCD2009_13_merge$county09)  ## Now 5 characters
+CCD2009_13_merge$county_code09 <- sprintf("%05s", CCD2009_13_merge$county_code09)
+
+nchar(CCD2009_13_merge$county_code09)  ## Now 5 characters
 
 saveRDS(CCD2009_13_merge, "CCD2009_13_merge.rds")
 
 
-## Join Census and CCD dfs
-counties_census_ccd <- left_join(CCD2009_13_merge, counties2013f, 
-                                 c("county09" = "GEOID"))
+###??? Join Census and CCD dfs, based on 2009 county code b/c HSLS data are 
+##  generalizable as of freshman class in 2009? What would this mean for id-ing
+##  counties that changed categorization in 2010? Captured at school-level in 
+##  HSLS...
+ccd_counties_df <- left_join(CCD2009_13_merge, counties2013f, 
+                                 c("county_code09" = "GEOID"))
 
-saveRDS(counties_census_ccd, "counties_census_ccd.rds")
+write.csv(ccd_counties_df, "ccd_counties_df", row.names = TRUE)
 
-## Add CRS to df
-counties_cenccd_crs <- st_as_sf(counties_census_ccd, 
-                            coords = c("latitude.x", "longitude.x"), crs = 4326)
-
+### Add CRS to df
+## counties_ccd_crs <- st_as_sf(ccd_counties_df, 
+#                            coords = c("latitude.x", "longitude.x"), crs = 4326)
 # Error message - some cases missing coordinates in CCD file
 
 # Check CCD merge
-check_lat_long <- counties_census_ccd %>%
-  select(fips09, county09, locale09, school_name.x, 
+check_lat_long <- ccd_counties_df %>%
+  select(fips09, county_code09, urban_centric_locale09, 
          ncessch.x, ncessch.x.x,
          ncessch.y, ncessch.y.y,
          latitude.x, longitude.x,
          latitude.x.x, longitude.x.x,
          latitude.y, longitude.y,
          latitude.y.y, longitude.y.y)
+view(check_lat_long)
+###??? Some schools no census data?
 
-###??? Not sure why I have x/y lat/long
-
-print(subset(check_lat_long, is.na(latitude.x), select = c(fips09, county09)))
+print(subset(check_lat_long, is.na(latitude.x), select = c(fips09, county_code09)))
 print(sum(is.na(check_lat_long$latitude.x)))
+###??? Visual inspection - no apparent pattern and just 82 cases
 
-# No apparent pattern - just 82 cases
+## Omit cases with missing lat data
+ccd_counties_df <- subset(ccd_counties_df, !is.na(latitude.x))
 
-# Omit cases with missing lat data
-counties_census_ccd <- subset(counties_census_ccd, !is.na(latitude.x))
+## Project, add CRS to df, first to 4326, then to match counties_sf
+ccd_counties_proj <- st_as_sf(
+  ccd_counties_df, coords = c("latitude.x", "longitude.x"), crs = 4326) %>%
+  st_transform(., st_crs(counties_sf)) %>%
+  distinct(., geometry, .keep_all = TRUE)
+##??? Waring, bb potentially invalid range lat/long but falls w/i +/- 90/180
+                            
+st_crs(ccd_counties_proj)  ## 4269
+st_bbox(ccd_counties_proj)
+###??? bb doesn't match counties_sf
 
-## Add CRS to df
-counties_cenccd_crs <- st_as_sf(counties_census_ccd, 
-                            coords = c("latitude.x", "longitude.x"), crs = 4326)
+identical(st_crs(ccd_counties_proj), st_crs(counties_sf)) 
+# TRUE
 
-## Transform CRS to match county shapefile                       
-counties_cenccd_proj <- counties_cenccd_crs %>%  
-  st_transform(crs = st_crs(counties_sf)) 
-                                           
-identical(st_crs(counties_cenccd_proj), st_crs(counties_sf)) 
-## returns TRUE
-
-saveRDS(counties_cenccd_proj, "counties_cenccd_proj.rds")
-
-# dbl-check
+## Check
 class(counties_cenccd_proj)
 dim(counties_cenccd_proj)
 
+all(st_is_valid(ccd_counties_proj))  ## TRUE
+any(st_is_empty(ccd_counties_proj))  ## FALSE
+
+saveRDS(ccd_counties_proj, "ccd_counties_proj.rds")
+
+## Join the projected df w/ the county shapefile
+schools_wi_counties <- st_join(ccd_counties_proj, counties_sf, join = st_within)
+###??? Invalid bounding box warning
+
+## Map some vars
+ggplot() +
+  geom_sf(data = schools_wi_counties, aes(fill = estimate_somecoll_assoc)) +
+  scale_fill_viridis_c() +  
+  labs(title = "Spatial Distribution of ed level - some coll/associate")
+
+###??? Total disaster
+
 ```
 
-\`\`\`{r}
+
+```{r}
+#| label: Look at spatial autocorrelation, define spatial weights matrix 
+#| eval: false
+
+###??? This code chunk does not run properly due to unresolved errors in prior
+
+## Check geometry
+st_geometry_type(ccd_counties_proj)
+# Point
+
+## Use Ripley's K to test spatial dist of pt patterns
+kf.env <- envelope(
+  as.ppp(ccd_counties_proj$estimate_IPR_under50),  
+  ## convert spatial obj to pt pattern obj
+  Kest,                       
+  ## tests whether points randomly distributed
+  correction = "translation",  
+  ## method for computing envelope, adjust for edge effects
+  nsim= 1000, 
+  ## # of simulations
+  envelope = TRUE, 
+  ## range of values expected uner null hypoth spatial randomness
+  verbose = FALSE)
+## don't print progress messages
+
+###??? Error message, can't interpret X as point pattern - so I think I haven't 
+### properly projected my data?
+
+
+## Estimate spatial weights matrix using adaptive bandwith - adjusts
+##  based on local properties of the data
+
+kde <- bkde2D(cbind(ccd_counties_proj$estimate_IPR_under50, 
+                    ccd_counties_proj$county_code09))
+
+## Plot estimates
+# Plot kernel density estimate
+image(kde, main = "Adaptive Bandwidth Kernel Density Estimation")
+contour(kde, add = TRUE)
+points(ccd_counties_proj$estimate_IPR_under50, 
+                    ccd_counties_proj$county_code09,
+       col = "blue", pch = 20)
+# Darker areas = greater density and smaller bandwidths
+# NCES used kriging, specifically Emprical Bayesian Kriging, which showed 
+# different bandwidths for urban and rural communities
+
+```
+
+```{r}
+#| label: Run spatial logistic regression
+#| eval: false
+
+###??? This code chunk does not run properly due to unresolved errors in prior
+
+### slrm implicitly accounts for spatial dependence, incl lagged vers of dep
+### var as predictor in regression - avg val of DV in neighbors, weighted by
+### spatial relationships id'd in weights matrix
+
+# Convert estimate_IPR_under50 to binary indicator
+ccd_counties_proj <- ccd_counties_proj %>%
+  mutate(
+    binary_ipr <- ifelse(
+      !is.na(counties_sf$estimate_IPR_under50) & 
+        counties_sf$estimate_IPR_under50 > 0, 1, 0)   
+)
+
+
+## Run the model
+IPR_under50_slrm <- slrm(
+  binary_ipr ~ 1,
+  data = ccd_counties_proj,
+  listw = poly2nb (ccd_counties_proj),
+  family = binomial)
+
+summary(model_slm)
+```
+
+{
+
+```{r}
+#| label: RESEARCH QUESTIONS AND WHY INTERESTED
+#| eval: false
+
+# RESEARCH QUESTIONS
+
+# For the purpose of this sample project, the research question was whether a spatial relationship exists between the distribution of schools and the proportion of the population with a household income under 50 percent of the poverty rate (IPR < .50). The necessary analytic steps should provide a parallel to my dissertation questions re. course access and participation. Dissertation questions below:
+
+# 1. Does access to, and participation in, academically rigorous courses vary geographically? Academic rigor is defined as curricular intensity, or highest level math course offered/completed, core science courses offered/completed (biology, chemistry, physics), and participation in at least one Advanced Placement course. 
+
+# 2. Does the impact of course access and participation vary geographically, according to whether students live in an urban, suburban, town, or rural community (and their sub-types)? Does the impact of where students live vary by subgroup, e.g., females vs. males, by racial/ethnic group, or student socioeconomic status? Outcomes include enrollment in a two-year institution within (measured at one and two years after high school), enrollment in a four-year institution (one or two years after high school), participation in the workforce or military (one or two years after high school), or degree completion within six years after high school. 
+
+# 3. Are certain community characteristics associated with the likelihood of a school  offering academically rigorous courses, including racial/ethnic composition, median income, poverty status, educational attainment, industrial structure, or geographic locale?
+
+# 4. Does moving from a high-opportunity high school (full course access all four years of high school) to a low-opportunity high school (less than full course access) impact student outcomes? Does any impact vary by student subgroup or school locale?
+
+#  WHY INTERESTED
+
+#   A substantive body of evidence tells us that the educational institutions youth attend reflect the communities in which they live, with the result that students act and make choices in environments that both enable and constrain (National Academies of Sciences, 2019). Thus, persistent between-group differences in education outcomes are important to monitor because they signal disparities in the kinds opportunity structures with which students engage. Course taking in high school represents an important site of inequality that contributes to disparate educational outcomes (Adelman, 2002, 2006; Attewell & Domina, 2008; Long et al., 2012; National Academies of Sciences, 2019). Although definitions of college and career readiness vary, experts consistently identify rigorous academic course taking as a central component (Austin, 2019; Hogrebe & Tate, 2017) and research demonstrates that access to such coursework varies by student race/ethnicity, socioeconomic status, and/or geographic context (Castro, 2021; Kolluri, 2018; Price, 2021; Xu et al., 2021).  Numerous studies have found that high school academic preparation is a consistently strong contributor to youth higher education outcomes (Austin, 2019; Byun et al., 2015; Byun, Irvin et al., 2012; Byun, Meece, et al., 2012; Irvin et al., 2017; Schmitt-Wilson & Byun, 2021, Wells et al., 2019). However, research at both national and state levels highlight examples of rural students having less access to advanced math, advanced science, and Advanced Placement courses (Gagnon & Mattingly, 2016; Hogrebe & Tate, 2017; Irvin et al., 2016, 2017; Provasnik et al., 2007; Saw & Agger, 2021). 
+
+#   Yet state and federal policy approaches tend to treat rural, suburban, and urban school systems the same, without attention to their varied organizational structures, student populations, histories, cultures, and fiscal capacity (J. Johnson & Howley, 2015). Rural communities often have lower property values and more undeveloped land, resulting in a lower tax base with which to support public education (Johnson & Zoellner, 2016). Because of this, funding systems that rely heavily on local funds are generally less equitable than those in which state funds play a larger role, and state-level approaches vary significantly. In addition, state and federal approaches to providing supplemental funds via competitive grants leave out the many rural districts with smaller staffs and limited proposal writing capacity (Brenner, 2023; J. Johnson & Zoellner, 2016). Further, communities with relatively smaller populations and geographic distance from population centers face increased costs due to geographic remoteness, harsh weather, and/or poor roads. Limited broadband access (Dobis et al., 2021) and travel time for resources best accessed in-person also present challenges. Policies and funding mechanisms intended to address these challenges have often not accounted for variability within and across rural districts and often provide relatively limited additional support (J. Johnson & Howley, 2015). Rural scholars and community stakeholders have recognized the need for greater attention to the geographic variation in opportunity and called for centering future research efforts around spatial equity, with attention to its intersection with diverse identities and social circumstances (Hartman et al., 2022). Multiple areas where future research is needed have been identified, among them college and career trajectories, access to advanced and accelerated coursework, and understanding what happens after students leave their local communities.
+
+```
+
+```{r}
+#| label: DATA AND METHODS
+
+# DATA. 
+
+# High School Longitudinal Study (HSLS:2009). This study draws on restricted-use student- and school-level data from the HSLS:2009. Conducted by National Center for Education Statistics, HSLS:2009 provides longitudinal, nationally-representative data on academic participation and outcomes for students who started 9th grade in 2009. This study uniquely links high school catalog and student transcript data, postsecondary transcript data, and Community Population Survey data on workforce and armed services participation. All data analyses were conducted using R programming. 
+
+# Common Core of Data (CCD). In order to provide greater insight into spatial variation in educational opportunity, HSLS:2009 data have been combined with publicly-available data from the CCD. This allows linkage of individual student records to a fully-nuanced (Thier et al. , 2020) definition of locale. The public data disaggregate urban and suburban locales into large, midsize, or small, and disaggregate town and rural locales into fringe, distant, and remote, for a total of 12 locale classifications. The public data also provide county-level FIPS codes that allow linking of school and -county-level data. Data were downloaded from the Urban Institute's Educational Data Portal and were linked with HSLS data using NCES school identification numbers.
+
+# U.S. Census American Community Survey (ACS). County-level indicators of key community social and economic characteristics come from the five-year ACS. The 2013 5-year data reflect averages across the years of 2009-2013 and demonstrate the least sampling error (Cowan et al., 2020; Dillingham et al., 2020). Key inequality risk factors include community-level ethno-racial composition, median household income, poverty, unemployment rates, educational attainment, and occupational structure (Thiede, et al., 2022; Butler et al., 2022; Jargowsky & Tursi (2015). ACS data were linked to HSLS and CCD data using state and county FIPS codes.
+
+# PROCESSING STEPS
+
+# Becuse geospatial analytic methods have the potential to capture variance not measured with standard statistical approaches (Hogrebe & Tate, 2017), this study applies spatial logistic regression. This allows for measurement of the relationship between a binary outcome variable (e.g., enrollment in a 2-year institution within one year of high school, or not) while taking into account spatial variation in the context of observations. 
+
+# The county-level shapefile for all counties in the US was downloaded directly into the R environment using the tigris package. Attribute data for each indicator was downloaded as separate dataframe objects. NCES data were also downloaded directly into R, also as dataframes, using the Urban Institutes educationdata package. Both the Census and CCD dataframe objects were trimmed of outlying areas, reduced to only the needed variables, and iteratively merged. Because NCES data are nationally representative of students enrolled in 9th grade during 2009, left_join was using to joing later years of CCD files to the 2009 file. CCD files provide geographic information via school-level latitude and longitude coordinates. After the census attribute files were merged, assigned the same Coordingate Reference System as the Census county-level shape file.  
+
+# Ripley's K was then used to identify whether outcome and predictor variables exhibit spatial autocorrelation, or that observations near each other tend to be more similar than observations that are father apart. Adaptive bandwith allows for bandwidth estimation that responds to the properties of the local data. Spatial logistic regression followed, suing the slrm function because it implicitly accounts for spatial dependence. 
+
+```
+
+```{r}
+#| label: RESULTS
+# Pending correction of errors
+```
+
+```{r}
+#| label: DISCUSSION
+
+# Also , pending correction of errors 
+```
+
+```{r}
+#| label: SELF-ASSESSMENT
+
+# How well does my project demonstrate that I achieved my objectives?
+
+# I knew my objectives were ambitious and this project demonstrates that my objectives were very, very, very ambitious, given my starting point. However, coming to this course completely new to geostats, completely new to R, a little rusty on standard stats, and with vision challenges, I feel that I have accomplished a a lot. My understanding of the concepts definitely starts to weaken with assignment 7 - auto correlation and interpolation, continuing through statistical modeling and movement/networks. I also ran into challenges with basic file joining that I was not able to resolve by reviewing my notes/reading materials. Given this, I was unable to complete several major sections of the final assignment. I think working with Census and CCD data files was more complicated than I anticipated. I thought it would be less error prone than self-collected data but the data files are large and contained some surprises re. missing cases. I'm not entirely confident that Ripley's K, adaptive bandwidth estimation, and spatial logistic regression are the correct approaches but this process has been really helpful preparation for my dissertation. In terms of a grade, I'm hopeful that I would qualify for a B...
+
+```
+
