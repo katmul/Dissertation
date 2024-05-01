@@ -264,7 +264,6 @@ download.file(ipeds_hd2013, destfile = paster())
 
 ```
 
-
 ```{r}
 #| label: Download NCES CCD Directory files, incl lat/long - save to load into VCE
 
@@ -973,7 +972,6 @@ saveRDS(CCD2009_13_merge, "CCD2009_13_merge.rds")
 
 ```
 
-
 ```{r}
 #| label: Merge Census/CCD dfs, merge with Census county-level sf
 
@@ -1037,4 +1035,5 @@ class(counties_cenccd_proj)
 dim(counties_cenccd_proj)
 
 ```
-```{r}
+
+\`\`\`{r}

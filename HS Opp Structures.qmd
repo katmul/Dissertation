@@ -13,6 +13,8 @@ editor: visual
 #          or web address if applicable
 # EDITED:  date code last edited
 # RUN:     date code last run
+
+## comment
 ```
 
 ```{r}
@@ -1075,7 +1077,6 @@ ggplot() +
 
 ```
 
-
 ```{r}
 #| label: Look at spatial autocorrelation, define spatial weights matrix 
 #| eval: false
@@ -1219,4 +1220,3 @@ summary(model_slm)
 # I knew my objectives were ambitious and this project demonstrates that my objectives were very, very, very ambitious, given my starting point. However, coming to this course completely new to geostats, completely new to R, a little rusty on standard stats, and with vision challenges, I feel that I have accomplished a a lot. My understanding of the concepts definitely starts to weaken with assignment 7 - auto correlation and interpolation, continuing through statistical modeling and movement/networks. I also ran into challenges with basic file joining that I was not able to resolve by reviewing my notes/reading materials. Given this, I was unable to complete several major sections of the final assignment. I think working with Census and CCD data files was more complicated than I anticipated. I thought it would be less error prone than self-collected data but the data files are large and contained some surprises re. missing cases. I'm not entirely confident that Ripley's K, adaptive bandwidth estimation, and spatial logistic regression are the correct approaches but this process has been really helpful preparation for my dissertation. In terms of a grade, I'm hopeful that I would qualify for a B...
 
 ```
-
