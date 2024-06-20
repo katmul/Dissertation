@@ -1,0 +1,1384 @@
+---
+title: "High School Opportunity Structures"
+format: html
+editor: visual
+---
+
+```{r}
+#| label: Potential workflow, incl FINAL PROJECT requirements
+   
+## 1. Load libraries
+## 2. CENSUS: Download county-level shapefile (using tigris) - NAD83
+#   
+## 3. CENSUS: Download data for county-level opportunity structure indicators
+#
+## 4. NCES: Download NCES CCD files
+#
+## 5. CENSUS: Initial cleaning - Census files
+#     - rename vars, e.g., 02001_002 -> White, etc., combine categories, pivot 
+#          wide, drop outlying areas, run basic descriptives
+#     --- CHALLENGE: Rounding w/ median income data
+#
+## 6. CENSUS: Drop outlying areas in sf, check geometries, merge Census dfs
+#
+## 7. NCES: Initial cleaning, file merge - CCD files
+#     - drop outlying, keep only needed vars, fix FIPS code, drop cases
+#       no lat/long data or no enrollment data, merge all
+#     --- CHALLENGE: Have x/xx, y/yy lat/long? - used left_join? Maybe b/c 
+#         slight differences in schools ea year?
+# 
+#  8. COMBINED: Merge CCD/Census dfs, the merge w/ Census county-level sf
+#     - Pad CCD FIPS for merge, use left_join to merge CCD/Census dfs,
+#          add CRS to merged df
+#     *** FINAL REQUIREMENT: Use at least 5 datasets -> 12 used
+#     --- CHALLENGE: Only plots of school locales, no state/county boundaries
+#
+## 9. ANALYSIS: Look at spatial autocorrelation, spatial matrix
+#
+# 10. ANALYSIS: Conduct logistic regression
+#     *** FINAL REQUIREMENT: Select class of analysis, justify choice, assess
+#           whether data meet assumptions, evaluate implications of key
+#           assumptions, e.g., model fit?
+#    --- CHALLENGE: Need to address prior issues in order to run
+# 11. VISUALIZATIONS: Minimum of 3, 
+#     *** FINAL REQUIREMENT: One should be pub quality, help you tell your story.
+# 12. REPORTING: Manuscript style doc
+#     *** FINAL REQUIREMENT: 1-2 paragraph description of question and why 
+#           interested; methods section with subsections describing data sources,
+#           processing steps taken/why, and analysis process. Show/annotate code;
+#           results section w/ tabular results, visualizations; Discussion of 
+#           results in context of research question, considers alternative 
+#           strategies, additional data that may be important, considers role
+#           of extent/resolution in analysis. 
+# 13. SELF-ASSESSMENT: How well does the project demonstrate that I achieved my
+#       initial objects?
+```
+
+```{r}
+
+#| label: Load libraries, instruct to cache
+
+###??? R is not storing packages where I thought I told it to: "The downloaded 
+# binary packages are in 
+# C:\Users\kmhtd\AppData\Local\Temp\Rtmp2FbIVj\downloaded_packages""
+
+
+# install.packages("broom", dependencies = TRUE)
+# install.packages("caret", dependencies = TRUE)
+# install.packages("car", dependencies = TRUE)
+# install.packages("corrr", dependencies = TRUE)
+# install.packages("educationdata", dependencies = TRUE)
+# install.packages("forcats", dependencies = TRUE)
+# install.packages("haven", dependencies = TRUE)
+# install.packages("janitor", dependencies = TRUE)
+# install.packages("KernSmooth", dependencies = TRUE)
+# install.packages("lmtest", dependencies = TRUE)
+# install.packages("purr", dependencies = TRUE)
+# install.packages("spatstat", dependencies = TRUE)
+# install.packages("spdep", dependencies = TRUE)
+# install.packages("spatialreg", dependencies = TRUE)
+# install.packages("stargazer", dependencies = TRUE)
+# install.packages("skimr", dependencies = TRUE)
+# install.packages("sf", dependencies = TRUE)
+# install.packages("styler", dependencies = TRUE)
+# install.packages("terra", dependencies = TRUE)
+# install.packages("tidycensus", dependencies = TRUE)
+# install.packages("tidyverse", dependencies = TRUE)
+# install.packages("tigris", dependencies = TRUE)
+# install.packages("tmap", dependencies = TRUE)
+library("broom")          ## nice for inspecting objects
+library("car")            ## for multicollinearity/robust standard errors
+library("caret")          ## machine learning
+library("corrr")          ## nice for correlations
+library("educationdata")  ## to download CCD files from Urban Institute API
+library("forcats")        ## functions for cat vars
+library("haven")          ## to add labels
+library("janitor")        ## nice for crosstabs
+library("KernSmooth")
+library("lmtest")         ## for robust standard errors
+library("purrr")          ## streamlined mapping functions
+library("spatstat")       ## for point data
+library("spdep")          ## for Moran's I
+library("sf")     
+library("skimr")
+library("spatstat")
+library("spatialreg")
+library("stargazer")      ## for producing polished tables
+library("styler")         ## for applying tidyverse style to code
+library("tidycensus")
+library("tidyverse")
+library("tigris")
+library ("tmap")
+###???library_of_interest   ## Canche, p. 100
+
+options(tigris_use_cache = TRUE)  ## Stores data for faster access
+
+```
+
+```{r}
+#| label: Download Census sf, then attribute dataframes
+
+##### Per census documentation for 2013 and 2014, both 2013 and 2014 TIGER/Line
+### Shapefiles reflect boundaries of governmental units as of 1/1/2013, with 
+#   only minimal updates in 2014 due to suspension of data collection fm 
+#   Boundary and Annexation survey that year. In addition, the 2012-13SY
+#   appears to have been skipped, with the 2013 data reflecting school district 
+#   boundaries for the 2011-12SY and the 2014 data reflecting 2013-14 boundaries.
+#   www2.census.gov/geo/pdfs/maps-data/data/tiger/tgrshp2013/TGRSHP2013_TechDoc.pdf
+#   www2.census.gov/geo/pdfs/maps-data/data/tiger/tgrshp2014/TGRSHP2014_TechDoc.pdf
+#   B/c HSLS student in my sample graduated b/4 9/2013, I will use the boundaries
+#   based on the 2011-12SY. These were updated in the 2010 census and descriptive
+#   analysis of HSLS school locale data suggest most changes in locale 
+#   categorization show up in the 2011-12SY data.
+    
+
+##### Set Census API key
+###   DONE: census_api_key("382d5d70eb12317f39a66ee1ea697d15968c1689", 
+###   install = TRUE)
+
+##### Download county shapefile w/ tigris - use cb = false for more accurate  
+###   mapping of water boundaries. Later use erase_water()
+counties_sf <- counties(state = NULL, 
+                        cb = FALSE, 
+                        resolution = "500k", 
+                        year = 2013)
+
+plot(st_geometry(counties_sf))
+st_crs(counties_sf)  ## NAD83
+class(counties_sf)
+
+
+##### ACS 5yr more robust than SAIPE and 1yr data - increased statistical 
+###  reliability and better fit for pops with fewer than 20K residents
+#    Dillingham et al. (2020). DESIGNED TO PROVIDE ESTIMATES OF POP, NOT 
+#    COUNTS OF THE POP. IF DECIDE ON TRACT-LEVEL DATA, “ACS data for small 
+#    statistical areas (such as census tracts) have no control totals, which may 
+#    lead to errors in the population and housing unit estimates. In such cases, 
+#    data users are encouraged to rely more upon noncount statistics, such as 
+#    percent distributions or averages.” (p. 6)
+
+##### Race data
+counties_race <- get_acs(geography = "county",
+                             variables = c(
+                               "B03002_001", "B03002_003", "B03002_004",
+                               "B03002_005", "B03002_006", "B03002_007",
+                               "B03002_008", "B03002_009", "B03002_012"),
+                             year = 2013,
+                             survey = "acs5", 
+)
+
+head(counties_race)  ## long format
+
+
+
+##### Median income data. Per Census staff recommendation, use Supplemental 
+### Table 1901. 
+ 
+counties_medinc <- get_acs(geography = "county",
+                             variables = c(
+                               "S1901_C01_001", "S1901_C01_002", "S1901_C01_003",
+                               "S1901_C01_004", "S1901_C01_005", "S1901_C01_006",
+                               "S1901_C01_007", "S1901_C01_008", "S1901_C01_009",
+                               "S1901_C01_010", "S1901_C01_011"), 
+                             year = 2013,
+                             survey = "acs5", 
+)
+
+head(counties_medinc)  ## long format
+
+
+
+##### Poverty data. Census staff recommendation to use S1701.
+counties_poverty <- get_acs(geography = "county", 
+                              variables = c(
+                                       "S1701_C01_001", "S1701_C01_002", 
+                                       "S1701_C01_004", "S1701_C01_005"),
+                              year = 2013,
+                              survey = "acs5",
+)
+
+head(counties_poverty)  ## long format
+
+
+
+##### Median IPR data.
+counties_IPR <- get_acs(geography = "county", 
+                          variables = c(
+                                       "C17002_001", "C17002_002", 
+                                       "C17002_003", "C17002_004", 
+                                       "C17002_005", "C17002_006", 
+                                       "C17002_007", "C17002_008"), 
+                          year = 2013,
+                          survey = "acs5",
+)
+
+head(counties_IPR)  ## long format
+
+
+
+##### Educational attainment data.
+counties_ed <- get_acs(geography = "county", 
+                         variables = c(
+                             "DP02_0058", "DP02_0059", "DP02_0060",
+                             "DP02_0061", "DP02_0062", "DP02_0063",
+                             "DP02_0064", "DP02_0065"),
+                         year = 2013,
+                         survey = "acs5",
+)
+
+head(counties_ed)  ## long format
+
+
+
+##### Occupational data. Grouping per Brown & Schafft (2019). Pub Admin as ref group,
+###  per Thiede et al. (2022) and Butler et al. (2020)
+
+counties_occupations <- get_acs(geography = "county", 
+                           variables = c(
+                             "S2405_C01_001", "S2405_C01_002", "S2405_C01_003",
+                             "S2405_C01_004", "S2405_C01_005", "S2405_C01_006",
+                             "S2405_C01_007", "S2405_C01_008", "S2405_C01_009",
+                             "S2405_C01_010", "S2405_C01_011", "S2405_C01_012",
+                             "S2405_C01_013", "S2405_C01_014"),
+                           year = 2013,
+                           survey = "acs5",
+)
+
+head(counties_occupations)  ## long format
+
+
+
+##### Unemployment data.
+counties_unemploy <- get_acs(geography = "county", 
+                              variables = c(
+                                "DP03_0003", "DP03_0004", "DP03_0005"),
+                              year = 2013,
+                              survey = "acs5",
+)
+
+head(counties_unemploy)  ## long format
+
+
+
+##### Age structure. Want to group 0-17, 18-64, and 65+. Appears need to download
+###   Age by sex tables and collapse
+
+counties_age <- get_acs(geography = "county", 
+                           variables = c(
+                             "B01001_001", "B01001_002", "B01001_003",
+                             "B01001_004", "B01001_005", "B01001_006",
+                             "B01001_007", "B01001_008", "B01001_009",
+                             "B01001_010", "B01001_011", "B01001_012",
+                             "B01001_013", "B01001_014", "B01001_015",
+                             "B01001_016", "B01001_017", "B01001_018", 
+                             "B01001_019", "B01001_020", "B01001_021",
+                             "B01001_022", "B01001_023", "B01001_024",
+                             "B01001_025", "B01001_026", "B01001_027",
+                             "B01001_028", "B01001_029", "B01001_030",
+                             "B01001_031", "B01001_032", "B01001_033",
+                             "B01001_034", "B01001_035", "B01001_036",
+                             "B01001_037", "B01001_038", "B01001_039",
+                             "B01001_040", "B01001_041", "B01001_042",
+                             "B01001_043", "B01001_044", "B01001_045",
+                             "B01001_046", "B01001_047", "B01001_048",
+                             "B01001_049"),
+                           year = 2013,
+                           survey = "acs5",
+)
+
+head(counties_age)  ## long format
+
+```
+
+```{r}
+#| label: Download NCES CCD Directory files, incl long/lat
+
+##### Load school-level dataframes from Urban Institute Ed Portal, 2009/10 
+###  thru 2012/13 SYs - Only public schools included. Directory file needed
+##   for extended locale, lat/long variables. 
+
+########## 2009-10 SY
+CCD2009_dir <- get_education_data(level = "schools",
+    source = "ccd",
+    topic = "directory",
+    filters = list(year = 2009))
+
+head(CCD2009_dir)  ## wide format
+
+
+CCD2009_enroll <- get_education_data(level = 'schools',
+                                     source = 'ccd',
+                                     topic = 'enrollment',
+                                     subtopic = list('race'),
+                                     filters = list(year = 2009,
+                                                    grade = 9:12), 
+                                     add_labels = TRUE)
+
+head(CCD2009_enroll)  
+
+
+########## 2010-11 SY
+CCD2010_dir <- get_education_data(level = "schools",
+    source = "ccd",
+    topic = "directory",
+    filters = list(year = 2010))
+
+head(CCD2010_dir)  ## wide format
+
+
+CCD2010_enroll <- get_education_data(level = 'schools',
+                                     source = 'ccd',
+                                     topic = 'enrollment',
+                                     subtopic = list('race'),
+                                     filters = list(year = 2010,
+                                                    grade = 9:12), 
+                                     add_labels = TRUE)
+
+head(CCD2010_enroll)  
+
+
+
+########## 2011-12SY
+CCD2011_dir <- get_education_data(level = "schools",
+    source = "ccd",
+    topic = "directory",
+    filters = list(year = 2011))
+
+head(CCD2011_dir)
+
+
+CCD2011_enroll <- get_education_data(level = 'schools',
+                                     source = 'ccd',
+                                     topic = 'enrollment',
+                                     subtopic = list('race'),
+                                     filters = list(year = 2011,
+                                                    grade = 9:12), 
+                                     add_labels = TRUE)
+
+head(CCD2011_enroll)
+
+
+
+### 2012-13 SY
+CCD2012_dir <- get_education_data(level = "schools",
+    source = "ccd",
+    topic = "directory",
+    filters = list(year = 2012))
+
+head(CCD2012_dir)
+
+
+CCD2012_enroll <- get_education_data(level = 'schools',
+                                     source = 'ccd',
+                                     topic = 'enrollment',
+                                     subtopic = list('race'),
+                                     filters = list(year = 2012,
+                                                    grade = 9:12), 
+                                     add_labels = TRUE)
+
+```
+
+```{r}
+#| label: Initial cleaning, Census data - race
+
+## Rename variables so understandable
+counties_race <- counties_race %>%
+  mutate(variable  = case_when(
+    variable == "B03002_001" ~ "race_total",
+    variable == "B03002_003" ~ "White",
+    variable == "B03002_004" ~ "Black",
+    variable == "B03002_005" ~ "AmIn_AlNat",
+    variable == "B03002_006" ~ "As",
+    variable == "B03002_007" ~ "NatHaw_OPI",
+    variable == "B03002_008" ~ "Some_Oth",
+    variable == "B03002_009" ~ "Two_More",
+    variable == "B03002_012" ~ "Hispanic")
+)
+
+## Pivot from long to wide
+counties_race_wide <- counties_race %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = c(estimate, moe))
+
+## Low n's - combine other/multi categories, keep only needed
+counties_race_wide <- counties_race_wide %>%
+  mutate(
+    estimate_Other_Some = estimate_Some_Oth + estimate_Two_More, 
+    moe_Other_Some = moe_Some_Oth + moe_Two_More
+) 
+
+## Check sums
+counties_race_wide <- counties_race_wide %>%
+  mutate(
+      check_race_sums = estimate_White + 
+                        estimate_Black + 
+                        estimate_AmIn_AlNat +
+                        estimate_As + 
+                        estimate_NatHaw_OPI + 
+                        estimate_Other +
+                        estimate_Hispanic)
+
+counties_race_wide <- counties_race_wide %>%
+  mutate(check_race_diff = ifelse(estimate_race_total != check_race_sums, 1, 0))
+
+summary(counties_race_wide$check_race_diff)
+
+## No sums differ from totals - drop check vars
+counties_race_wide <- counties_race_wide %>%
+  select(!c(check_race_sums, check_race_diff))
+
+## Reorder vars
+counties_race_wide <- counties_race_wide %>% 
+  relocate(estimate_Other, .before = moe_race_total)
+
+## Drop outlying areas
+# Filter out rows where the first two digits of GEOID are greater than 56
+counties_race_wide  <- counties_race_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_race_states <- counties_race_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_race_states)  ## 0 obs
+
+## Run basic descriptives 
+skim(counties_race_wide)
+
+###??? Not sure what I do w/ moe
+```
+
+```{r}
+#| label: Initial cleaning, Census data - medinc
+
+## Rename variables so understandable
+counties_medinc <- counties_medinc %>% 
+  mutate(variable  = case_when(
+    variable == "S1901_C01_001" ~ "medinc_total",
+    variable == "S1901_C01_002" ~ "medinc_lt_10K",
+    variable == "S1901_C01_003" ~ "medinc_10_14K",
+    variable == "S1901_C01_004" ~ "medinc_15_24K",
+    variable == "S1901_C01_005" ~ "medinc_25_34K",
+    variable == "S1901_C01_006" ~ "medinc_35_49K",
+    variable == "S1901_C01_007" ~ "medinc_50_74K",
+    variable == "S1901_C01_008" ~ "medinc_75_99K",
+    variable == "S1901_C01_009" ~ "medinc_100_149K",
+    variable == "S1901_C01_010" ~ "medinc_150_199K",
+    variable == "S1901_C01_011" ~ "medinc_200Kplus",    
+))
+
+## estimates are in percentages
+
+## Pivot from long to wide
+counties_medinc_wide <- counties_medinc %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = c(estimate, moe))
+
+##### Collapse income bins. Thiede et al (2022), use bins of 25K but stop at 
+###  50K+ - will bin to 100K+. In table S1901, estimates reported as pctgs.  
+#    Need to change in order to collapse categories. 
+
+## Move the decimal over two places
+counties_medinc_wide <- counties_medinc_wide %>%
+  mutate(
+    adj_est_medinc_lt_10K = estimate_medinc_lt_10K / 100,  
+    adj_est_medinc_10_14K = estimate_medinc_10_14K / 100,
+    adj_est_medinc_15_24K = estimate_medinc_15_24K / 100,
+    adj_est_medinc_25_34K = estimate_medinc_25_34K / 100,
+    adj_est_medinc_35_49K = estimate_medinc_35_49K / 100,
+    adj_est_medinc_50_74K = estimate_medinc_50_74K / 100,
+    adj_est_medinc_75_99K = estimate_medinc_75_99K / 100,
+    adj_est_medinc_100_149K = estimate_medinc_100_149K / 100,
+    adj_est_medinc_150_199K = estimate_medinc_150_199K / 100,
+    adj_est_medinc_200Kplus = estimate_medinc_200Kplus / 100
+)
+
+# Estimate counts
+counties_medinc_wide <- counties_medinc_wide %>%
+  mutate(
+    medinc_lt_10K_est_count = round(adj_est_medinc_lt_10K * 
+                                      estimate_medinc_total, digits = 0),
+    medinc_10_14K_est_count = round(adj_est_medinc_10_14K * 
+                                      estimate_medinc_total, digits = 0),
+    medinc_15_24K_est_count = round(adj_est_medinc_15_24K * 
+                                      estimate_medinc_total, digits = 0),
+    medinc_25_34K_est_count = round(adj_est_medinc_25_34K * 
+                                      estimate_medinc_total, digits = 0),
+    medinc_35_49K_est_count = round(adj_est_medinc_35_49K * 
+                                      estimate_medinc_total, digits = 0),
+    medinc_50_74K_est_count = round(adj_est_medinc_50_74K * 
+                                      estimate_medinc_total, digits = 0),
+    medinc_75_99K_est_count = round(adj_est_medinc_75_99K * 
+                                      estimate_medinc_total, digits = 0),
+    medinc_100_149K_est_count = round(adj_est_medinc_100_149K * 
+                                        estimate_medinc_total, digits = 0),
+    medinc_150_199K_est_count = round(adj_est_medinc_150_199K * 
+                                        estimate_medinc_total, digits = 0),
+    medinc_200Kplus_est_count = round(adj_est_medinc_200Kplus * 
+                                        estimate_medinc_total, digits = 0)
+  )
+
+
+## Collapse to wider bins
+counties_medinc_wide <- counties_medinc_wide %>%
+  mutate( 
+    medinc_lt25K_est_count =  medinc_lt_10K_est_count + 
+                              medinc_10_14K_est_count +
+                              medinc_15_24K_est_count,
+    medinc_25_49K_est_count = medinc_25_34K_est_count +
+                              medinc_35_49K_est_count,
+    medinc_gt100K_est_count = medinc_100_149K_est_count + 
+                              medinc_150_199K_est_count + 
+                              medinc_200Kplus_est_count)
+    
+## Check sums
+counties_medinc_wide <- counties_medinc_wide %>%
+  mutate(
+    check_medinc_sums = medinc_lt25K_est_count +
+                        medinc_25_49K_est_count + 
+                        medinc_50_74K_est_count +
+                        medinc_75_99K_est_count +
+                        medinc_gt100K_est_count)
+
+counties_medinc_wide <- counties_medinc_wide %>%
+  mutate(check_medinc_diff = ifelse(estimate_medinc_total != check_medinc_sums, 
+                                    1, 0))
+
+summary(counties_medinc_wide$check_medinc_diff)
+
+# Drop outlying areas
+counties_medinc_wide  <- counties_medinc_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_medinc_states <- counties_medinc_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_medinc_states)  ## 0 obs
+
+
+## Run basic descriptives 
+skim(counties_medinc_wide, GEOID:estimate_medinc_200Kplus) 
+skim(counties_medinc_wide, adj_est_medinc_lt_10K:adj_est_medinc_200Kplus)
+skim(counties_medinc_wide, medinc_lt_10K_est_count:medinc_gt100K_est_count)
+
+
+###??? Some sums differ from totals - tried to correct rounding - how handle?
+
+###??? After resolve - Drop unnecessary vars
+# counties_medinc_wide <- counties_medinc_wide %>%
+#  dplyr::select(!c(medinc_lt_10K_estimate:medinc_200Kplus_estimate))
+
+# counties_medinc_wide <- counties_medinc_wide %>%
+#   dplyr::select(!c(medinc_lt_10K_estimate_adj:medinc_35_49K_est_count))
+
+# counties_medinc_wide <- counties_medinc_wide %>%
+#  dplyr::select(!c(medinc_100_149K_est_count:medinc_200Kplus_est_count))
+# view(counties_medinc_wide)  
+
+## Reorder vars
+# counties_medinc_wide <- counties_medinc_wide %>% 
+#   relocate(medinc_lt25K_est_count, medinc_25_49K_est_count, 
+#           .before = medinc_50_74K_est_count)
+#  view(counties_medinc_wide)
+
+###??? Not sure what I do w/ medinc_moe
+ 
+```
+
+```{r}
+#| label: Initial cleaning, Census data - poverty 
+
+## Rename variables so understandable - selecting poverty all under 18, not
+# related children under 18 (004 instead of 003)
+counties_poverty <- counties_poverty %>%
+  mutate(variable  = case_when(
+    variable == "S1701_C01_001" ~ "pov_total",
+    variable == "S1701_C01_002" ~ "pov_under18",
+    variable == "S1701_C01_004" ~ "pov_18_64",
+    variable == "S1701_C01_005" ~ "pov_65plus"))
+
+## Pivot from long to wide
+counties_poverty_wide <- counties_poverty %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = c(estimate, moe))
+
+## Check sums
+counties_poverty_wide <- counties_poverty_wide %>%
+  mutate(check_poverty_sums = estimate_pov_under18 + 
+                         estimate_pov_18_64 +
+                         estimate_pov_65plus)
+
+summary(counties_poverty_wide$check_poverty_sums)
+
+counties_poverty_wide <- counties_poverty_wide %>%
+  mutate(check_pov_diff = ifelse(estimate_pov_total != check_poverty_sums, 1, 0))
+
+summary(counties_poverty_wide$check_pov_diff)
+
+## No sums differ from totals - drop check vars
+counties_poverty_wide <- counties_poverty_wide %>%
+  select(!c(check_poverty_sums, check_pov_diff))
+
+# Drop outlying areas
+counties_poverty_wide  <- counties_poverty_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_poverty_states <- counties_poverty_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_poverty_states)  ## 0 obs
+
+## Run basic descriptives 
+skim(counties_poverty_wide)
+
+```
+
+```{r}
+#| label: Initial cleaning, Census data - IPR
+
+### Income-to-poverty ratio. Indicator of economic status relative to federal
+##  poverty level. Numerator is total income, incl wages, salaries, investments,
+#   and government assistance. Denominator is federal poverty threshold, based 
+#   on household size/composition. IPR under 50 indicates that a family's 
+#   income is less than half of the poverty threshold; IPR of 1.25 indicates
+#   a family income that exceeds the poverty threshold by 25 percent. 
+
+counties_IPR <- counties_IPR %>%
+  mutate(variable  = case_when(
+    variable == "C17002_001" ~ "IPR_total",
+    variable == "C17002_002" ~ "IPR_under50",
+    variable == "C17002_003" ~ "IPR_50_99",
+    variable == "C17002_004" ~ "IPR_1_124",
+    variable == "C17002_005" ~ "IPR_125_149",
+    variable == "C17002_006" ~ "IPR_150_184",
+    variable == "C17002_007" ~ "IPR_185_199",
+    variable == "C17002_008" ~ "IPR_200over"))
+
+## Pivot from long to wide
+counties_IPR_wide <- counties_IPR %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = c(estimate, moe))
+
+## Check sums
+counties_IPR_wide <- counties_IPR_wide %>%
+  mutate(check_IPR_sums = 
+      estimate_IPR_under50 +  
+      estimate_IPR_50_99 +  
+      estimate_IPR_1_124 + 
+      estimate_IPR_125_149 + 
+      estimate_IPR_150_184 + 
+      estimate_IPR_185_199 + 
+      estimate_IPR_200over)
+
+summary(counties_IPR_wide$check_IPR_sums)
+
+counties_IPR_wide <- counties_IPR_wide %>%
+  mutate(check_IPR_diff = ifelse(estimate_IPR_total != check_IPR_sums, 1, 0))
+
+summary(counties_IPR_wide$check_IPR_diff)
+
+## No sums differ from totals - drop check vars
+counties_IPR_wide <- counties_IPR_wide %>%
+  select(!c(check_IPR_sums, check_IPR_diff))
+
+# Drop outlying areas
+counties_IPR_wide  <- counties_IPR_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_IPR_states <- counties_IPR_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_IPR_states)  ## 0 obs
+
+## Run basic descriptives 
+skim(counties_IPR_wide)
+
+```
+
+```{r}
+#| label: Initial cleaning, Census data - educational attainment
+
+## Rename variables so understandable
+counties_ed <- counties_ed %>%
+  mutate(variable  = case_when(
+    variable == "DP02_0058" ~ "ed_total",
+    variable == "DP02_0059" ~ "lt_gr9",
+    variable == "DP02_0060" ~ "gr9_12_nodip",
+    variable == "DP02_0061" ~ "hs_grad",
+    variable == "DP02_0062" ~ "some_college",
+    variable == "DP02_0063" ~ "assoc",
+    variable == "DP02_0064" ~ "bach",
+    variable == "DP02_0065" ~ "grad_prof",
+))
+
+## Pivot from long to wide
+counties_ed_wide <- counties_ed %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = c(estimate, moe))
+
+## Collapse to wider bins
+counties_ed_wide <- counties_ed_wide %>%
+  mutate( 
+   estimate_lt_hsgrad = estimate_lt_gr9 + estimate_gr9_12_nodip,
+   estimate_somecoll_assoc = estimate_some_college + estimate_assoc)
+
+## Check sums
+counties_ed_wide <- counties_ed_wide %>%
+  mutate(
+    check_ed_sums = estimate_lt_hsgrad + 
+                    estimate_hs_grad +  
+                    estimate_somecoll_assoc +
+                    estimate_bach +
+                    estimate_grad_prof)
+
+summary(counties_ed_wide$check_ed_sums)
+
+counties_ed_wide <- counties_ed_wide %>%
+  mutate(check_ed_diff = ifelse(estimate_ed_total != check_ed_sums, 1, 0))
+
+summary(counties_ed_wide$check_ed_diff)
+
+## No sums differ from totals - drop check vars
+counties_ed_wide <- counties_ed_wide %>%
+  select(!c(check_ed_sums, check_ed_diff))
+
+# Drop outlying areas
+counties_ed_wide  <- counties_ed_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_ed_states <- counties_ed_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_ed_states)  ## 0 obs
+
+## Run basic descriptives 
+skim(counties_ed_wide)
+
+## Reorder vars
+counties_ed_wide <- counties_ed_wide %>% 
+  relocate(estimate_lt_hsgrad, .before = estimate_hs_grad)
+
+counties_ed_wide <- counties_ed_wide %>% 
+  relocate(estimate_somecoll_assoc, .before = estimate_bach)
+   
+ counties_ed_wide <- counties_ed_wide %>%
+  select(!c(estimate_lt_gr9, estimate_gr9_12_nodip, estimate_some_college,
+            estimate_assoc)) 
+```
+
+```{r}
+#| label: Initial cleaning, Census data - industry 
+
+## Rename variables so understandable
+counties_industry <- counties_industry %>%
+  mutate(variable  = case_when(
+    variable == "S2405_C01_001" ~ "civ_emp_pop_total",
+    variable == "S2405_C01_002" ~ "AgForFishHuntMin",
+    variable == "S2405_C01_003" ~ "Construct",
+    variable == "S2405_C01_004" ~ "Manu",
+    variable == "S2405_C01_005" ~ "Wholesale",
+    variable == "S2405_C01_006" ~ "Retail",
+    variable == "S2405_C01_007" ~ "TransWareUtil",
+    variable == "S2405_C01_008" ~ "Info",
+    variable == "S2405_C01_009" ~ "FinInsRE",
+    variable == "S2405_C01_010" ~ "Prof",
+    variable == "S2405_C01_011" ~ "EdHlthSoc",
+    variable == "S2405_C01_012" ~ "ArtEntRecAcc",
+    variable == "S2405_C01_013" ~ "OthSvcs",
+    variable == "S2405_C01_014" ~ "PubAdmin",
+))
+
+## Pivot from long to wide
+counties_industry_wide <- counties_industry %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = c(estimate, moe))
+
+## Collapse to wider bins
+counties_industry_wide <- counties_industry_wide %>%
+  mutate( 
+   estimate_TTUC = estimate_Construct + 
+                   estimate_Wholesale +  
+                   estimate_TransWareUtil,
+   estimate_prvt_svcs = estimate_Retail +
+                        estimate_EdHlthSoc + 
+                        estimate_ArtEntRecAcc + 
+                        estimate_OthSvcs,
+   estimate_prdcr_svcs = estimate_Info +
+                         estimate_FinInsRE +
+                         estimate_Prof)
+   
+## Check sums
+counties_industry_wide <- counties_industry_wide %>%
+  mutate(check_industry_sums = estimate_AgForFishHuntMin + 
+    estimate_TTUC + 
+    estimate_Manu + 
+    estimate_prvt_svcs + 
+    estimate_prdcr_svcs + 
+    estimate_PubAdmin)
+
+summary(counties_industry_wide$check_industry_sums)
+
+counties_industry_wide <- counties_industry_wide %>%
+  mutate(check_industry_diff = ifelse(estimate_civ_emp_pop_total != 
+                                        check_industry_sums, 1, 0))
+
+summary(counties_industry_wide$check_industry_diff)
+
+## No sums differ from totals - drop check vars
+counties_industry_wide <- counties_industry_wide %>%
+  select(!c(estimate_Construct, estimate_Wholesale, estimate_TransWareUtil,
+            estimate_Retail, estimate_EdHlthSoc, estimate_ArtEntRecAcc,
+            estimate_OthSvcs, check_industry_sums, check_industry_diff))
+
+# Filter out outlying areas
+counties_industry_wide  <- counties_industry_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_industry_states <- counties_industry_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_industry_states)  ## 0 obs
+
+## Run basic descriptives 
+skim(counties_industry_wide)
+
+## Reorder vars
+counties_industry_wide <- counties_industry_wide %>% 
+  relocate(estimate_TTUC:estimate_prdcr_svcs, .before = estimate_PubAdmin)
+ 
+```
+
+```{r}
+#| label: Initial cleaning, Census data - unemployment
+
+## Rename variables so understandable
+counties_unemploy <- counties_unemploy %>%
+  mutate(variable  = case_when(
+    variable == "DP03_0003" ~ "civ_16plus_labfor",
+    variable == "DP03_0004" ~ "civ_16plus_in_labfor",
+    variable == "DP03_0005" ~ "civ_16plus_unemp"))
+
+## Pivot from long to wide
+counties_unemploy_wide <- counties_unemploy %>%
+  pivot_wider(
+    names_from = variable,
+    values_from = c(estimate, moe))
+
+## Check sums
+counties_unemploy_wide <- counties_unemploy_wide %>%
+  mutate(check_unemploy_sums = estimate_civ_16plus_in_labfor +
+                               estimate_civ_16plus_unemp)
+
+summary(counties_unemploy_wide$check_unemploy_sums)
+
+counties_unemploy_wide <- counties_unemploy_wide %>%
+  mutate(check_unemploy_diff = ifelse(estimate_civ_16plus_labfor != 
+                                        check_unemploy_sums, 1, 0))
+
+summary(counties_unemploy_wide$check_unemploy_diff)
+
+## No sums differ from totals - drop check vars
+counties_unemploy_wide <- counties_unemploy_wide %>%
+  select(!c(check_unemploy_sums, check_unemploy_diff))
+
+# Filter out outlying areas
+counties_unemploy_wide  <- counties_unemploy_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_unemploy_states <- counties_unemploy_wide %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_unemploy_states)  ## 0 obs
+
+## Run basic descriptives 
+skim(counties_unemploy_wide)
+
+```
+
+```{r}
+#| label: Drop outlying areas in sf, check geometries, merge Census dataframes
+
+# Filter out outlying areas
+counties_sf  <- counties_sf %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) <= 56)
+
+check_counties_sf <- counties_sf %>%
+  filter(as.numeric(substr(GEOID, 1, 2)) > 56)
+table(check_counties_sf)  ## 0 obs
+
+# Check geometries
+all(st_is_valid(counties_sf))  ## TRUE
+any(st_is_empty(counties_sf))  ## FALSE
+st_bbox(counties_sf)
+#       xmin       ymin       xmax       ymax 
+# -179.23109   18.86546  179.85968   71.44106 
+plot(counties_sf)
+
+# Join Census df
+counties2013a <- left_join(counties_ed_wide, 
+                           counties_industry_wide, by = "GEOID")
+counties2013b <- left_join(counties2013a, 
+                           counties_IPR_wide, by = "GEOID")
+counties2013c <- left_join(counties2013b, 
+                           counties_medinc_wide, by = "GEOID")
+counties2013d <- left_join(counties2013c, 
+                           counties_poverty_wide, by = "GEOID")
+counties2013e <- left_join(counties2013d, 
+                           counties_race_wide, by = "GEOID")
+counties2013f <- left_join(counties2013e, 
+                           counties_unemploy_wide, by = "GEOID")
+
+```
+
+```{r}
+#| label: Initial cleaning, file merge - CCD files
+
+##### Separately, shapefiles do not appear to be available for 2013. Downloaded  
+###  2015-16 from 
+#    https://data-nces.opendata.arcgis.com/datasets/741214a4a1824b018506fd140599e57f_0/explore
+
+###### 2009-10 SY
+### Drop outlying areas
+CCD2009_dir_statesonly <- CCD2009_dir %>%
+  dplyr::filter(fips <= 56)  
+table(CCD2009_dir_statesonly$fips)  
+
+## Create list of vars to keep. Note, fips is state FIPS code, county_code is
+## combined state/county FIPS code, dropping leading zero.
+CCDdir_col_keep <- c("year", "ncessch", "school_id", "school_name", "leaid", 
+                     "lea_name", "fips", "latitude", "longitude", 
+                     "urban_centric_locale", "county_code", "school_type", 
+                     "school_status", "charter", "magnet", "virtual", 
+                     "enrollment", "ncessch_num")
+
+##### Per CCD 2009 codebook: 
+###   TYPE09 1 = reg, 2 = spec ed, 3 = voc ed, 4 = alt, 5 = reportable program
+#   STATUS09 1 = open at last report/currently open,
+#            2 = closed
+#            3 = opened
+#            4 = operation last report but not on CCD list at time
+#            5 = listed last year as with diff LEA
+#            6 = closed
+#            7 = scheduled to be operational
+#            8 = reopened
+
+##### Retain only needed vars
+CCD2009_dir_short <- select(CCD2009_dir_statesonly, !!!CCDdir_col_keep)
+
+##### Run descriptives
+Hmisc::describe(CCD2009_dir_short)  ## 82 cases no latitude
+print(sum(CCD2009_dir_short$enrollment <= 0))  ## 6,672 no/neg enrollment
+
+##### Drop cases missing latitude or having zero/neg enrollment
+CCD2009_dir_short <- CCD2009_dir_short %>%
+  dplyr::filter(!is.na(latitude) & enrollment > 0) 
+skim(CCD2009_dir_short)
+print(sum(CCD2009_dir_short$enrollment <= 0))  ## n = 95,160
+
+
+##### 2010-11 SY
+## Drop outlying areas
+CCD2010_dir_statesonly <- CCD2010_dir %>%
+  dplyr::filter(fips <= 56)  
+table(CCD2010_dir_statesonly$fips)  
+
+##### Keep only needed vars
+CCD2010_dir_short <- select(CCD2010_dir_statesonly, !!!CCDdir_col_keep)
+
+## Run descriptives
+Hmisc::describe(CCD2010_dir_short)
+
+## 77 cases no lat/long data. How many cases negative or zero enrollment?
+print(sum(CCD2010_dir_short$enrollment <= 0))  ## 6,672
+
+## Drop cases missing latitude or having zero/neg enrollment
+CCD2010_dir_short <- CCD2010_dir_short %>%
+  dplyr::filter(!is.na(latitude) & enrollment > 0) 
+skim(CCD2010_dir_short)
+print(sum(CCD2010_dir_short$enrollment <= 0))  ## 95,104
+
+
+### 2011-12SY
+# Drop outlying areas
+CCD2011_dir_statesonly <- CCD2011_dir %>%
+  dplyr::filter(fips <= 56)  
+table(CCD2011_dir_statesonly$fips)  
+
+# Keep only needed vars
+CCD2011_dir_short <- select(CCD2011_dir_statesonly, !!!CCDdir_col_keep)
+
+## Run descriptives
+Hmisc::describe(CCD2011_dir_short)
+
+## 0 cases missing lat long data. How many cases negative or zero enrollment?
+print(sum(CCD2011_dir_short$enrollment <= 0))     ## 6,748
+
+## Drop cases having zero/neg enrollment
+CCD2011_dir_short <- CCD2011_dir_short %>%
+  dplyr::filter(!is.na(latitude) & enrollment > 0) 
+skim(CCD2011_dir_short)
+print(sum(CCD2011_dir_short$enrollment <= 0))  ## 94,753
+
+
+### 2012-13 SY
+# Drop outlying areas
+CCD2012_dir_statesonly <- CCD2012_dir %>%
+  dplyr::filter(fips <= 56)  
+table(CCD2012_dir_statesonly$fips)  
+
+# Keep only needed vars
+CCD2012_dir_short <- select(CCD2012_dir_statesonly, !!!CCDdir_col_keep)
+
+## Run descriptives
+Hmisc::describe(CCD2012_dir_short)
+
+## 0 cases missing lat long data. How many cases negative or zero enrollment?
+print(sum(CCD2012_dir_short$enrollment <= 0))     ## 6,050
+
+## Drop cases having zero/neg enrollment
+CCD2012_dir_short <- CCD2012_dir_short %>%
+  dplyr::filter(!is.na(latitude) & enrollment > 0) 
+skim(CCD2012_dir_short)
+print(sum(CCD2012_dir_short$enrollment <= 0))  ## 94,869
+
+
+##### Merge CCD Directory Files
+
+##### Per E. Christopher, NCES, “HSLS:09 is nationally representative of schools 
+###  in 2009 with 9th grades." email, 2/23/24 - So, merge to keep only schools 
+#    that were in CCD during 2009 and each of the following years. 
+#    Also, in UI CCD files, year as separate var. Add suffix to distinguish years. 
+#    Left join uses a common key, retains all rows fm left df, incl matching rows
+#    fm right df. Rows fm left w/ no match on right will have NAs. 
+
+### Add year as variable suffix to id changes over time, exclude ncessch,  
+## school_id, school_name, leaid, lea_name, latitude, longitude, ncessch_num
+
+exclude_ccd_suffix <- c("ncessch", "school_id", "school_name", "leaid",
+                        "lea_name", "latitude", "longitude", 
+                        "ncessch_num") 
+
+CCD2009_dir_addyr <- CCD2009_dir_short %>%
+  rename_with(~ paste0(., "09"), -all_of(exclude_ccd_suffix))
+
+CCD2010_dir_addyr <- CCD2010_dir_short %>%
+  rename_with(~ paste0(., "10"), -all_of(exclude_ccd_suffix))
+
+CCD2011_dir_addyr <- CCD2011_dir_short %>%
+  rename_with(~ paste0(., "11"), -all_of(exclude_ccd_suffix))
+
+CCD2012_dir_addyr <- CCD2012_dir_short %>%
+  rename_with(~ paste0(., "12"), -all_of(exclude_ccd_suffix))
+            
+
+## Create one file of CCD dir data across all years, to check changes in locale
+CCD2009_11_merge <- left_join(CCD2009_dir_addyr, CCD2010_dir_addyr, 
+                              by = "ncessch_num")
+
+CCD2009_12_merge <- left_join(CCD2009_11_merge, CCD2011_dir_addyr, 
+                              by = "ncessch_num")
+
+CCD2009_13_merge <- left_join(CCD2009_12_merge, CCD2012_dir_addyr, 
+                              by = "ncessch_num")
+
+skim(CCD2009_13_merge)
+
+```
+
+```{r}
+#| label: Merge CCD/Census dfs, merge w/ Census county-level sf, check geom
+#| eval: false
+
+##### UI CCD files incl FIPS code county_code) but drop leading zeros - Census 
+###   files do not. Use str_pad to pad FIPS(county_code09), for merge
+
+CCD2009_13_merge$county_code09 <- as.character(str_pad(
+  CCD2009_13_merge$county_code09, width = 5, side = "left", pad = "0"))
+
+
+###??? Join Census and CCD dfs, based on 2009 county code b/c HSLS data are 
+##  generalizable as of freshman class in 2009? What would this mean for id-ing
+##  counties that changed categorization in 2010? Captured at school-level in 
+##  HSLS...
+ccd_counties_df <- left_join(CCD2009_13_merge, counties2013f, 
+                                 c("county_code09" = "GEOID"))
+
+## Check variables 
+str(dplyr::select(tail(ccd_counties_df), 1:80))
+str(dplyr::select(tail(ccd_counties_df), 81:160))
+str(dplyr::select(tail(ccd_counties_df), 161:205))
+
+print(sum(is.na(ccd_counties_df$latitude.x)))  ## 0
+
+
+##### Add/convert CRS in df, join w/ county-level shapefile
+ccd_counties_crs <- st_as_sf(ccd_counties_df, coords = c(
+  "longitude.x", "latitude.x"), crs = 4326)
+
+## Reproject CRS to match county-level shapefile
+ccd_counties_sf <- st_transform(ccd_counties_crs, crs = st_crs(counties_sf))
+
+##### Looks like my school-level lat/long vars get dropped - add back in
+ccd_counties_sf$longitude.x <- ccd_counties_df$longitude.x
+ccd_counties_sf$latitude.x <- ccd_counties_df$latitude.x
+
+## Reorder vars
+ccd_counties_sf <- ccd_counties_sf %>%
+  select(ncessch.x, county_code09, longitude.x, latitude.x, everything())
+
+## Double-check                          
+st_crs(ccd_counties_sf)  ## 4269
+st_bbox(ccd_counties_sf)
+
+identical(st_crs(ccd_counties_sf), st_crs(counties_sf))  ## TRUE
+
+class(ccd_counties_sf)
+dim(ccd_counties_sf)
+
+all(st_is_valid(ccd_counties_sf))  ## TRUE
+any(st_is_empty(ccd_counties_sf))  ## FALSE
+
+
+##### Map school locations within counties
+###   Define custom color palette
+palette <- scales::col_numeric(palette = c("lightblue", "darkblue"), 
+                               domain = c(11, 43))
+
+##### Plot counties and overlay school locations with custom colors
+ggplot() +
+  geom_sf(data = ccd_counties_sf) +
+  geom_point(data = ccd_counties_sf, aes(
+  x = longitude.x, y = latitude.x, color = urban_centric_locale11), size = 0.10) +
+  scale_color_gradient("School Locale", low = "lightblue", high = "darkblue") +
+  theme_minimal()
+
+###??? What happened to AK? School locations only?
+
+
+```
+
+```{r}
+#| label: Look at spatial autocorrelation, define spatial weights matrix 
+
+##### Check geometry
+st_geometry_type(ccd_counties_sf)
+# Point
+
+
+##### Convert IPR counts to proportions, recode locale as factor
+ccd_counties_sf <- ccd_counties_sf %>%
+  mutate(prop_IPR_under50 = estimate_IPR_under50 / estimate_IPR_total) %>%
+  mutate(urban_centric_locale09 = as.factor(urban_centric_locale09))
+
+
+##### Using Moran's I - use distance b/c point data
+
+# Create neighborhood object based on k-nearest neighbors
+nb <- knn2nb(knearneigh(st_coordinates(ccd_counties_sf), k = 1))
+
+# Convert the resulting neighborhood object to a spatial weights matrix
+w <- nb2listw(nb, style = "W")
+
+# Calculate Moran's I
+moran <- moran.test(ccd_counties_sf$estimate_IPR_under50, listw = w)
+
+# Print results
+print(moran)
+
+## Results indicate spatial clustering of IPR under 50%
+```
+
+```{r}
+#| label: Run spatial logistic regression
+
+### lagsarlm implicitly accounts for spatial dependence, incl lagged vers of dep
+### var as predictor in regression - avg val of DV in neighbors, weighted by
+### spatial relationships id'd in weights matrix. Requires too much memory
+### to run full ccd_counties_sf file so filter
+
+IPR_locale <- ccd_counties_sf[c("prop_IPR_under50", 
+                                "urban_centric_locale09")]
+
+model <- lagsarlm(prop_IPR_under50 ~ urban_centric_locale09, 
+                  data = IPR_locale, listw = w, type = "lag")
+
+###!!! Error: cannot allocate vector of size 67.5 Gb
+
+## Try removing objects
+rm(list = c("ccd_counties_crs", "ccd_counties_df", "CCD2009_11_merge"))
+rm(list = c("CCD2009_12_merge", "CCD2009_13_merge", "CCD2009_dir")) 
+rm(list = c("CCD2009_dir_addyr", "CCD2009_dir_short", "CCD2009_dir_statesonly"))
+rm(list = c("CCD2010_dir", "CCD2010_dir_addyr", "CCD2010_dir_short"))
+rm(list = c("CCD2010_dir_statesonly", "CCD2011_dir", "CCD2011_dir_addyr"))
+rm(list = c("CCD2011_dir_short", "CCD2011_dir_statesonly", "CCD2012_dir"))
+rm(list = c("CCD2012_dir_addyr", "CCD2012_dir_statesonly", "CCD2012_dir_short"))
+
+## Still can't run - try removing all but last files
+
+ls()
+rm(list = c("CCDdir_col_keep", "check_counties_sf", "check_ed_states",       
+  "check_industry_states", "check_IPR_states", "check_medinc_states", 
+  "check_poverty_states", "check_race_states", "check_unemploy_states",
+  "counties_ed", "counties_ed_wide", "counties_industry", 
+  "counties_industry_wide", "counties_IPR", "counties_IPR_wide", 
+  "counties_medinc", "counties_medinc_wide", "counties_poverty", 
+  "counties_poverty_wide", "counties_race", "counties_race_wide", "counties_sf",
+  "counties_unemploy", "counties_unemploy_wide", "counties2013a", 
+  "counties2013b", "counties2013c", "counties2013d", "counties2013e", 
+  "counties2013f","exclude_ccd_suffix"))
+
+##### Still can't run - Error: cannot allocate vector of size 67.5 Gb
+
+summary(model)
+```
+
+```{r}
+#| label: RESEARCH QUESTIONS AND WHY INTERESTED
+#| eval: false
+
+# RESEARCH QUESTIONS
+
+# For the purpose of this sample project, the research question was whether a 
+# spatial relationship exists between the distribution of schools by locale and  
+# the proportion of the population with a household income under 50 percent of the 
+# poverty rate (IPR < .50). The necessary analytic steps should provide a 
+# parallel to my dissertation questions re. course access and participation. 
+# Dissertation questions below:
+
+# Descriptive Questions
+#
+# 1. How do student characteristics vary by school locale, e.g., 
+#    race/ethnicity, socioeconomic status, and plans after high school?
+#
+# 2. How do county-level social and economic contexts vary by school locale
+#    e.g., race/ethnicity, rates of poverty (possibly also income-to-poverty
+#    ratios), median income, and educational attainment, industrial structure
+#    and unemployment rates?
+# 
+# 3. How does access to, and participation in, academically rigorous courses vary 
+#    by school locale? Academic rigor is defined as curricular intensity, or 
+#    highest level math course offered/completed, core science courses offered
+#    /completed (biology, chemistry, physics), and access to/participation in at 
+#    least one Advanced Placement course.
+#
+# 4. How do postsecondary outcomes vary by school locale, e.g., enrollment in a two
+#    -year institution within (measured at one and two years after high school),
+#    enrollment in a four-year institution (one or two years after high school),
+#    participation in the workforce or military (one or two years after high 
+#    school), or degree completion within six years after high school.
+#
+# 5. How does the effect of access to, and participation in, curricular intensity
+#    vary by school locale, controlling for student level factors?
+#
+# 5. How does the effect of access to, and participation in, curricular intensity
+#    vary by school locale, controlling for student level factors and community
+#    social contexts, e.g., race/ethnicity, rates of poverty (possibly also income
+#    -to-poverty ratios), median income, and educational attainment?
+# 
+# 6. How does the affect of access to, and participation in, curricular intensity
+#    vary by school locale, controlling for student level factors, community
+#    social contexts, and community economic contexts, e.g., unemployment rates
+#    and industrial structure? Does any impact vary by student school locale? 
+#
+# 7. Does moving from a high-opportunity high school (full course access all 
+#    four years of high school) to a low-opportunity high school (less than full 
+#    course access) impact student outcomes? Does the impact vary by school 
+#    locale?
+
+#  WHY INTERESTED
+
+#      A substantive body of evidence tells us that the educational institutions 
+# youth attend reflect the communities in which they live, with the result that 
+# students act and make choices in environments that both enable and constrain 
+# (National Academies of Sciences, 2019). Thus, persistent between-group 
+# differences in education outcomes are important to monitor because they signal 
+# disparities in the kinds opportunity structures with which students engage. 
+# Course taking in high school represents an important site of inequality that 
+# contributes to disparate educational outcomes (Adelman, 2002, 2006; Attewell & 
+# Domina, 2008; Long et al., 2012; National Academies of Sciences, 2019). 
+# Although definitions of college and career readiness vary, experts 
+# consistently identify rigorous academic course taking as a central component 
+# (Austin, 2019; Hogrebe & Tate, 2017) and research demonstrates that access to 
+# such coursework varies by student race/ethnicity, socioeconomic status, and/or 
+# geographic context (Castro, 2021; Kolluri, 2018; Price, 2021; Xu et al., 2021).  
+# Numerous studies have found that high school academic preparation is a 
+# consistently strong contributor to youth higher education outcomes 
+# (Austin, 2019; Byun et al., 2015; Byun, Irvin et al., 2012; 
+# Byun, Meece, et al., 2012; Irvin et al., 2017; Schmitt-Wilson & Byun, 2021, 
+# Wells et al., 2019). However, research at both national and state levels 
+# highlight examples of rural students having less access to advanced math, 
+# advanced science, and Advanced Placement courses (Gagnon & Mattingly, 2016; 
+# Hogrebe & Tate, 2017; Irvin et al., 2016, 2017; Provasnik et al., 2007; 
+# Saw & Agger, 2021). 
+
+#      Yet state and federal policy approaches tend to treat rural, suburban, and 
+# urban school systems the same, without attention to their varied organizational 
+# structures, student populations, histories, cultures, and fiscal capacity 
+# (J. Johnson & Howley, 2015). Rural communities often have lower property values 
+# and more undeveloped land, resulting in a lower tax base with which to support 
+# public education (Johnson & Zoellner, 2016). Because of this, funding systems 
+# that rely heavily on local funds are generally less equitable than those in 
+# which state funds play a larger role, and state-level approaches vary 
+# significantly. In addition, state and federal approaches to providing 
+# supplemental funds via competitive grants leave out the many rural districts 
+# with smaller staffs and limited proposal writing capacity (Brenner, 2023; 
+# J. Johnson & Zoellner, 2016). Further, communities with relatively smaller 
+# populations and geographic distance from population centers face increased 
+# costs due to geographic remoteness, harsh weather, and/or poor roads. Limited 
+# broadband access (Dobis et al., 2021) and travel time for resources best 
+# accessed in-person also present challenges. Policies and funding mechanisms 
+# intended to address these challenges have often not accounted for variability 
+# within and across rural districts and often provide relatively limited 
+# additional support (J. Johnson & Howley, 2015). Rural scholars and community 
+# stakeholders have recognized the need for greater attention to the geographic 
+# variation in opportunity and called for centering future research efforts around 
+# spatial equity, with attention to its intersection with diverse identities and 
+# social circumstances (Hartman et al., 2022). Multiple areas where future 
+# research is needed have been identified, among them college and career 
+# trajectories, access to advanced and accelerated coursework, and understanding 
+# what happens after students leave their local communities.
+
+```
+
+```{r}
+#| label: DATA AND METHODS
+
+# DATA. 
+
+# High School Longitudinal Study (HSLS:2009). This study draws on restricted-use student- and school-level data from the HSLS:2009. Conducted by National Center for Education Statistics, HSLS:2009 provides longitudinal, nationally-representative data on academic participation and outcomes for students who started 9th grade in 2009. This study uniquely links high school catalog and student transcript data, postsecondary transcript data, and Community Population Survey data on workforce and armed services participation. All data analyses were conducted using R programming. 
+
+# Common Core of Data (CCD). In order to provide greater insight into spatial variation in educational opportunity, HSLS:2009 data have been combined with publicly-available data from the CCD. This allows linkage of individual student records to a fully-nuanced (Thier et al. , 2020) definition of locale. The public data disaggregate urban and suburban locales into large, midsize, or small, and disaggregate town and rural locales into fringe, distant, and remote, for a total of 12 locale classifications. The public data also provide county-level FIPS codes that allow linking of school and -county-level data. Data were downloaded from the Urban Institute's Educational Data Portal and were linked with HSLS data using NCES school identification numbers.
+
+# U.S. Census American Community Survey (ACS). County-level indicators of key community social and economic contexts come from the five-year ACS. The 2013 5-year data reflect averages across the years of 2009-2013 and demonstrate the least sampling error (Cowan et al., 2020; Dillingham et al., 2020). Key inequality risk factors include community-level ethno-racial composition, median household income, poverty, unemployment rates, educational attainment, and occupational structure (Thiede, et al., 2022; Butler et al., 2022; Jargowsky & Tursi, 2015). ACS data were linked to HSLS and CCD data using state and county FIPS codes.
+
+# PROCESSING STEPS
+
+# Becuse geospatial analytic methods have the potential to capture variance not measured with standard statistical approaches (Hogrebe & Tate, 2017; Partridge et al, 2008), this study applies spatial logistic regression. Spatial logistic regression allows for measurement of the relationship between a binary outcome variable (e.g., enrollment in a 2-year institution within one year of high school, or not) and school locale, while taking into account spatial variation in the context of observations. 
+
+# The county-level shapefile for all counties in the US was downloaded directly into the R environment using the tigris package. Attribute data for each indicator was downloaded as a separate dataframe object. NCES data were also downloaded directly into R, also as dataframes, using the Urban Institutes educationdata package. Both the Census and CCD dataframe objects were trimmed of outlying areas, reduced to only the needed variables, and iteratively merged. Because NCES data are nationally representative of students enrolled in 9th grade during 2009, left_join was using to join later years of CCD files to the 2009 file. CCD files provide geographic information via school-level latitude and longitude coordinates. After the census attribute files were merged, they were assigned the same Coordingate Reference System as the Census county-level shape file.  
+
+# Moran's I was used to assess the degree of spatial autocorrelation between poverty and school geographic locale, a first step in assessing whether spatial models are an appropriate method for addressing bias. Counties were defined as neighbors using the k-nearest neighbors approach with k = 1, thereby focusing on very local interactions of geographic proximity. The resulting neighborhood object was converted int a spatial weights matriz using the 'nb2listw' function from the 'spdep' package in r. This matrix quantifies the spatial connections between counties, with each county linked directly to its nearest neighbor.
+
+# Spatial logistic regression followed, using the lagsarlm function because it allows for estimating the effects of the independent variable (school locale) on the dependent variable (IPR under 50 percent), accounting for spatial dependence. For the purposes of the class assignment, the intended test was the relationship between school locale and county-level IPR under 50 percent. 
+```
+
+```{r}
+#| label: RESULTS
+# The calculated Moran's I statistic was 0.995 with a standard deviate of 335.6, and p < 0.001, indicating a highly significant positive spatial autocorrelation. This suggests that counties with similar levels of poverty tend to be geographically clustered, reflecting spatial dependencies in poverty distribution across the study area.
+
+
+# The spatial logistic regression did not run correctly. However, I anticipate that there is significant spatial dependence in the IPR outcome, potentially indicating that higher rates of IPR under 50 percent are associated with core urban and remote rural school locations. 
+```
+
+```{r}
+#| label: DISCUSSION
+
+# Pending correction of errors and assuming the outcomes hypothesized in results, the inclusion of spatial modeling not only confirms the importance of geographic context in shaping poverty outcomes but also highlights the utility of spatial methods in capturing spatial dependencies and improving model fit. These findings contribute to our understanding of regional disparities in poverty and underscore the need for geographically-targeted policies aimed at addressing socioeconomic disparities.
+```
+
+```{r}
+#| label: SELF-ASSESSMENT
+
+# How well does my project demonstrate that I achieved my objectives?
+
+# I knew my objectives were ambitious and this project demonstrates that my objectives were very, very, very ambitious, given my starting point. However, coming to this course completely new to geostats, completely new to R, a little rusty on standard stats, and with vision challenges, I feel that I have accomplished a a lot. My understanding of the concepts definitely starts to weaken with assignment 7 - auto correlation and interpolation, continuing through statistical modeling and movement/networks. Given this, I was unable to some sections of the final assignment. I think working with Census and CCD data files was more complicated than I anticipated. I thought it would be less error prone than self-collected data but the data files are large and contained some surprises re. missing cases. I'm not entirely confident that I've employed the correct approaches but this process has been really helpful preparation for my dissertation. In terms of a grade, I'm hopeful that I would qualify for a B...
+
+```
